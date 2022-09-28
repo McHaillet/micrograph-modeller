@@ -1,6 +1,7 @@
 import os
-from pytom.gpu.initialize import xp, device
-import pytom.simulation.physics as physics
+import physics
+import utils
+import numpy as np
 from scipy.optimize import curve_fit
 
 
@@ -13,7 +14,7 @@ def convert_defocus_astigmatism_to_defocusU_defocusV(defocus, astigmatism):
 
 
 # TODO make this a GPU kernel / numba function as xp.meshgrid has a lot of memory overhead
-def fourier_grids(shape, nyquist, indexing='ij', reduced=False):
+def fourier_grids(shape, nyquist, indexing='ij', reduced=False, device='cpu'):
     """
     Generate a fourier space frequency array where values range from -nyquist to +nyquist, with the center equal
     to zero.
@@ -34,6 +35,8 @@ def fourier_grids(shape, nyquist, indexing='ij', reduced=False):
 
     @author: Marten Chaillet, Gijs van der Schot
     """
+    xp, _ = utils.get_array_module_from_device(device)
+
     assert 1 <= len(shape) <= 3, print('invalid argument for number of dimensions of fourier array')
 
     # xp.arange(-1, 1, 998) returns an array of length 999, expression xp.arange(size) / (size/2) - 1 solves this
@@ -50,7 +53,9 @@ def fourier_grids(shape, nyquist, indexing='ij', reduced=False):
     return xp.meshgrid(*d, indexing=indexing)
 
 
-def normalised_grid(shape, reduced=False):
+def normalised_grid(shape, reduced=False, device='cpu'):
+    xp, _ = utils.get_array_module_from_device(device)
+
     grids = fourier_grids(shape, 1, reduced=reduced)
     return xp.sqrt(sum([g**2 for g in grids]))
 
@@ -67,6 +72,8 @@ def ctf_grids(grids):
 
     @author: Marten Chaillet
     """
+    xp, _, _ = utils.get_array_module(grids[0])
+
     k = sum([d ** 2 for d in grids])  # xz ** 2 + yz ** 2 + zz ** 2)
     return xp.sqrt(k), k, k ** 2
 
@@ -89,13 +96,15 @@ def angular_grid(gridx, gridy):
 
     @author: Marten Chaillet
     """
+    xp, _, _ = utils.get_array_module_from_device(gridx)
+
     # correct expression is: x - 1j * y
     # TODO check compared to ctf estimation CTFFIND to see if astigmatism is correct
     return xp.angle(gridx - 1j * gridy)
 
 
-def precalculate(shape, nyquist):
-    grids = fourier_grids(shape, nyquist)
+def precalculate(shape, nyquist, device='cpu'):
+    grids = fourier_grids(shape, nyquist, device=device)
     k, k2, k4 = ctf_grids(grids)
     angles = angular_grid(grids[0], grids[1])
     return k, k2, k4, angles
@@ -121,46 +130,10 @@ def astigmatised_defocus_grid(angular_grid, defocusU, defocusV, astigmatism_angl
 
     @author: Marten Chaillet
     """
+    xp, _, _ = utils.get_array_module(angular_grid)
+
     return 0.5 * (defocusU + defocusV +
                   (defocusU - defocusV) * xp.cos(2 * (angular_grid - astigmatism_angle_rad)))
-
-
-def generate_astigmatised_grid(k, Y=None, defocusU=None, defocusV=None, defocus_angle_deg=0., nyquist=None):
-    """
-    Generate an astigmatised defocus grid with wavevector k and fourier grid in y. If defocusV is not provided a non
-    astigmatic grid is created.
-
-    @param k: fourier space wave vector
-    @type  k: L{np.ndarray}
-    @param Y: fourier grid in y dimension (optional), by default determined from k but providing it is more precise
-    @type  Y: L{np.ndarray}
-    @param defocusU: defocus in m
-    @type  defocusU: L{float}
-    @param defocusV: defocus along astigmatism angle in m (optional)
-    @type  defocusV: L{float}
-    @param defocus_angle_deg: astigmatism angle in degrees
-    @type  defocus_angle_deg: L{float}
-    @param nyquist: optional nyquist frequencies
-    @type  nyquist: L{float}
-
-    @return: return the astigmatised defocus grid
-    @rtype:  L{np.ndarray}
-
-    @author: Gijs van der Schot, Marten Chaillet
-    """
-    size = k.shape[1]
-    defocusV = defocusU if defocusV is None else defocusV
-    if Y is None:
-        if nyquist is None:
-            nyquist = k.min(axis=0)
-        Y = fourier_grids(k.shape, nyquist)[1]
-
-    theta = xp.arcsin(Y / k)
-
-    z = defocusU * xp.cos(theta - defocus_angle_deg) ** 2 + defocusV * xp.sin(theta - defocus_angle_deg) ** 2
-    z[:, -int(size // 2):] = xp.flipud(z[:, -int(size // 2):])
-
-    return z
 
 
 def sinc_square(x, p1, p2, p3, p4):
@@ -183,6 +156,8 @@ def sinc_square(x, p1, p2, p3, p4):
 
     @author: Marten Chaillet
     """
+    xp, _, _ = utils.get_array_module(x)
+
     return p1 * (xp.sin(xp.pi*(x-p2)*p3) / (xp.pi*(x-p2)*p3))**2 + p4
 
 
@@ -242,6 +217,8 @@ def radial_average(image):
 
     @author: Marten Chaillet
     """
+    xp, _, _ = utils.get_array_module(image)
+
     assert len(image.shape) == 2, "radial average calculation only works for 2d image arrays"
     assert len(set(image.shape)) == 1, 'differently size dimension, cannot perform radial averaging'
 
@@ -302,7 +279,7 @@ def display_microscope_function(image, form='', ylim=(-1, 1), complex=False):
     return
 
 
-def read_detector_csv(filename):
+def read_detector_csv(filename, device='cpu'):
     """
     Read a csv file containing detector data. The data should be listed as rows with the first column the x
     coordinate and the second the y coordinate. Data should also be comma separated.
@@ -315,14 +292,16 @@ def read_detector_csv(filename):
 
     @author: Marten Chaillet
     """
-    data = xp.genfromtxt(filename, delimiter=',', dtype=xp.float32)
+    xp, _ = utils.get_array_module_from_device(device)
+
+    data = xp.genfromtxt(filename, delimiter=',', dtype=np.float32)
     x = data[:, 0]
     y = data[:, 1]
     return x, y
 
 
 def create_detector_response(detector, response_function, image_size, voltage=300E3, oversampling=1, folder='',
-                             display=False):
+                             display=False, device='cpu'):
     """
     This function will read a CSV file containing a detector response function at a specific voltage, with format
     {detector}_{response_function}_{int(voltage*1E-3)}kV.csv . This function will be loaded from folder (if provided)
@@ -357,6 +336,8 @@ def create_detector_response(detector, response_function, image_size, voltage=30
 
     @author: Marten Chaillet
     """
+    xp, _ = utils.get_array_module_from_device(device)
+
     name = f'{detector}_{response_function}_{int(voltage*1E-3)}kV'
     if folder == '':
         filename = f'{name}.csv'
@@ -364,8 +345,8 @@ def create_detector_response(detector, response_function, image_size, voltage=30
         filename = os.path.join(folder, f'{name}.csv')
     print(f'Determining {response_function} for {detector}')
     # data is a function of spatial frequency
-    qdata, ydata = read_detector_csv(filename)
-    params = fit_sinc_square(qdata,ydata)
+    qdata, ydata = read_detector_csv(filename, device=device)
+    params = fit_sinc_square(qdata, ydata)
 
     sampling_image_size = image_size * oversampling
     # fraction of nyquist maximum
@@ -374,7 +355,8 @@ def create_detector_response(detector, response_function, image_size, voltage=30
     # r = xp.sqrt(R ** 2 + Y ** 2)
     # r = fourier_array(sampling_image_size, 2, 1)
 
-    grids = fourier_grids((sampling_image_size,)*2, 1)  # nyquist is 1, as the fraction of nyquist maximum
+    grids = fourier_grids((sampling_image_size,)*2, 1, device=device)  # nyquist is 1, as the fraction of nyquist
+    # maximum
     r = xp.sqrt(sum([d**2 for d in grids]))
 
     detector_response = sinc_square(r, params[0], params[1], params[2], params[3])
@@ -385,7 +367,7 @@ def create_detector_response(detector, response_function, image_size, voltage=30
         detector_response = detector_response[cut:-cut, cut:-cut]
 
     if display:
-        display_microscope_function(detector_response, form=response_function, ylim=(0,1), complex=False)
+        display_microscope_function(detector_response, form=response_function, ylim=(0, 1), complex=False)
 
     return detector_response
 
@@ -408,6 +390,7 @@ def transmission_function(sliced_potential, voltage, dz):
 
     @author: Marten Chaillet
     """
+    xp, _, _ = utils.get_array_module(sliced_potential)
     # wavelength
     Lambda = physics.wavelength_eV2m(voltage)
     # relative mass
@@ -418,7 +401,7 @@ def transmission_function(sliced_potential, voltage, dz):
     return xp.exp(1j * sigma_transfer * sliced_potential * dz)
 
 
-def fresnel_propagator(image_size, pixel_size, voltage, dz):
+def fresnel_propagator(image_size, pixel_size, voltage, dz, device='cpu'):
     """
     The fresnel propagator describing propagation of the electron wave through each slice of the sample.
 
@@ -436,10 +419,12 @@ def fresnel_propagator(image_size, pixel_size, voltage, dz):
 
     @author: Marten Chaillet
     """
+    xp, _ = utils.get_array_module_from_device(device)
+
     Lambda = physics.wavelength_eV2m(voltage)
 
     nyquist = 1 / (2 * pixel_size)
-    grids = fourier_grids((image_size,) * 2, nyquist)
+    grids = fourier_grids((image_size,) * 2, nyquist, device=device)
     k = xp.sqrt(sum([d ** 2 for d in grids]))
     # k = fourier_array(image_size, 2, nyquist)
 
@@ -447,7 +432,7 @@ def fresnel_propagator(image_size, pixel_size, voltage, dz):
 
 
 def create_ctf_1d(size, spacing, defocus, amplitude_contrast=0.07, voltage=300e3, Cs=2.7e-3, phase_shift_deg=.0,
-                  bfactor=.0):
+                  bfactor=.0, device='cpu'):
     """
     Create a 1 dimensional ctf curve.
     Based on tom_deconv by Tegunov.
@@ -474,6 +459,8 @@ def create_ctf_1d(size, spacing, defocus, amplitude_contrast=0.07, voltage=300e3
 
     @author: Marten Chaillet
     """
+    xp, _ = utils.get_array_module_from_device(device)
+
     nyquist = 1 / (2 * spacing)
     k = xp.arange(0, nyquist, nyquist / size)
     k2 = k ** 2
@@ -497,7 +484,8 @@ def create_ctf_1d(size, spacing, defocus, amplitude_contrast=0.07, voltage=300e3
 
 
 def create_ctf(shape, spacing, defocusU, amplitude_contrast, voltage, Cs, sigma_decay=.0,
-               display=False, defocusV=None, defocus_angle_deg=.0, phase_shift_deg=.0, zero_cut=-1, precalculated=None):
+               display=False, defocusV=None, defocus_angle_deg=.0, phase_shift_deg=.0, zero_cut=-1,
+               precalculated=None, device='cpu'):
     """
     This function models a non-complex CTF. It can be used for both 2d or 3d function. It describes a ctf after
     detection (and is therefore not complex).
@@ -539,10 +527,13 @@ def create_ctf(shape, spacing, defocusU, amplitude_contrast, voltage, Cs, sigma_
 
     # get the fourier space coordinate grids and angular grid
     if precalculated is None:
+        xp, _ = utils.get_array_module_from_device(device)  # if not precalc set backend with device
+
         nyquist = 1 / (2 * spacing)
         k, k2, k4, angles = precalculate(shape, nyquist)
     else:
         k, k2, k4, angles = precalculated
+        xp, _, _ = utils.get_array_module(k)  # else get backend from precalc grids
 
     lmbd = physics.wavelength_eV2m(voltage)
 
@@ -597,7 +588,7 @@ def create_ctf(shape, spacing, defocusU, amplitude_contrast, voltage, Cs, sigma_
 # todo| an image size. But These function could be generated for non square images as well.
 
 def create_simple_complex_ctf(image_shape, pixel_size, defocus, voltage=300E3, Cs=2.7E-3, sigma_decay=0.4,
-                              display=False):
+                              display=False, device='cpu'):
     """
     Create a complex valued contrast transfer function of the phase modulation in a 2d array. Dimensions of input image
     shape should be equal.
@@ -622,6 +613,8 @@ def create_simple_complex_ctf(image_shape, pixel_size, defocus, voltage=300E3, C
 
     @author: Marten Chaillet
     """
+    xp, _ = utils.get_array_module_from_device(device)
+
     assert len(image_shape) == 2, print('image shape should be a tuple of length 2')
     assert len(set(image_shape)) == 1, print('invalid input image/volume for create CTF, dimensions need to be equal.')
 
@@ -630,7 +623,7 @@ def create_simple_complex_ctf(image_shape, pixel_size, defocus, voltage=300E3, C
     nyquist = 1 / (2 * pixel_size)
 
     # k = fourier_array(image_shape[0], len(image_shape), nyquist)
-    grids = fourier_grids(image_shape, nyquist)
+    grids = fourier_grids(image_shape, nyquist, device=device)
     k = xp.sqrt(sum([d ** 2 for d in grids]))
 
     complex_ctf = xp.exp(-1j * xp.pi / 2 * (Cs * (lmbd ** 3) * (k ** 4) - 2 * defocus * lmbd * (k ** 2)))
@@ -648,7 +641,7 @@ def create_simple_complex_ctf(image_shape, pixel_size, defocus, voltage=300E3, C
 
 def create_complex_ctf(image_shape, pixel_size, defocus, voltage=300E3, Cs=2.7E-3, Cc=2.7E-3,
                            energy_spread=0.7, illumination_aperture=0.030E-3, objective_diameter=100E-6,
-                           focus_length=4.7E-3, astigmatism=0.0, astigmatism_angle=0.0, display=False):
+                           focus_length=4.7E-3, astigmatism=0.0, astigmatism_angle=0.0, display=False, device='cpu'):
     """
     Create complex valued CTF curve of phase modulation in a 2d array. Adapated from Vulovic et al., 2013.
 
@@ -695,9 +688,7 @@ def create_complex_ctf(image_shape, pixel_size, defocus, voltage=300E3, Cs=2.7E-
 
     @author: Marten Chaillet
     """
-    from scipy.ndimage import gaussian_filter
-
-    # print(locals())
+    xp, ndimage = utils.get_array_module_from_device(device)
 
     assert len(image_shape) == 2, print('image shape should be a tuple of length 2')
     assert len(set(image_shape)) == 1, print('invalid input image/volume for create CTF, dimensions need to be equal.')
@@ -709,7 +700,7 @@ def create_complex_ctf(image_shape, pixel_size, defocus, voltage=300E3, Cs=2.7E-
 
     # generate fourier space grids with astigmatism
     nyquist = 1 / (2 * pixel_size)
-    xx, yy = fourier_grids(image_shape, nyquist)
+    xx, yy = fourier_grids(image_shape, nyquist, device=device)
     qsym = xp.sqrt(xx ** 2 + yy ** 2)
     astigmatism_angle_rad = xp.deg2rad(astigmatism_angle)
     xdot = xx * xp.cos(astigmatism_angle_rad) - yy * xp.sin(astigmatism_angle_rad)
@@ -735,7 +726,7 @@ def create_complex_ctf(image_shape, pixel_size, defocus, voltage=300E3, Cs=2.7E-
     aperture = xp.ones(image_shape)
     qmax = 2 * xp.pi * objective_diameter / (lmbd * focus_length)
     aperture[q > qmax] = 0
-    gaussian_filter(aperture, sigma=3, output=aperture)
+    ndimage.gaussian_filter(aperture, sigma=3, output=aperture)
 
     # convolute CTF with envelope and aperture
     complex_ctf *= (envelope * aperture)
@@ -746,8 +737,9 @@ def create_complex_ctf(image_shape, pixel_size, defocus, voltage=300E3, Cs=2.7E-
     return complex_ctf
 
 
-def test_defocus_grid_time(shape, ntests=100):
+def test_defocus_grid_time(shape, ntests=100, device='cpu'):
     import time
+    xp, _ = utils.get_array_module_from_device(device)
 
     # Initialize parameters
     df1 = 4e-6

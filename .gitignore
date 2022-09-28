@@ -1,0 +1,5 @@
+# ignore .idea folder from pycharm
+.idea
+
+# ignore __pychache__
+.pyc

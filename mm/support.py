@@ -1,25 +1,26 @@
-from pytom.gpu.initialize import xp, device
+import numpy as np
+import microscope
+import utils
 
 
 def fwhm_to_sigma(fwhm):
-    return fwhm / (2 * xp.sqrt(2 * xp.log(2)))
+    return fwhm / (2 * np.sqrt(2 * np.log(2)))
 
 
 def sigma_to_fwhm(sigma):
-    return sigma * (2 * xp.sqrt(2 * xp.log(2)))
+    return sigma * (2 * np.sqrt(2 * np.log(2)))
 
 
 def hwhm_to_sigma(hwhm):
-    return hwhm / (xp.sqrt(2 * xp.log(2)))
+    return hwhm / (np.sqrt(2 * np.log(2)))
 
 
 def sigma_to_hwhm(sigma):
-    return sigma * (xp.sqrt(2 * xp.log(2)))
+    return sigma * (np.sqrt(2 * np.log(2)))
 
 
-def create_gaussian_low_pass(shape, spacing, resolution, reduced=False):
+def create_gaussian_low_pass(shape, spacing, resolution, reduced=False, device='cpu'):
     """
-    NOTE: MOVE FUNCTION TO TOMPY.FILTER
     Create a 2D or 3D Gaussian low-pass filter with cutoff (or HWHM). This value will be converted to the proper
     sigma for the Gaussian function to acquire the desired cutoff.
 
@@ -35,24 +36,36 @@ def create_gaussian_low_pass(shape, spacing, resolution, reduced=False):
 
     @author: Marten Chaillet
     """
-    from pytom.simulation.microscope import normalised_grid
+    xp, _ = utils.get_array_module_from_device(device)
     assert len(shape) == 2 or len(shape) == 3, "filter can only be created in 2d or 3d"
 
     # 2 * spacing / resolution is cutoff in fourier space
     # then convert cutoff (hwhm) to sigma for gaussian function
     sigma_fourier = hwhm_to_sigma(2 * spacing / resolution)
 
-    return xp.exp(-normalised_grid(shape, reduced=reduced) ** 2 / (2 * sigma_fourier ** 2))
+    return xp.exp(-microscope.normalised_grid(shape, reduced=reduced, device=device) ** 2 / (2 * sigma_fourier ** 2))
 
 
-def reduce_resolution_fourier(input, spacing, resolution):
+def apply_fourier_filter(data, filter, human=True):
+    """
+     @param human: whether the filter is in human understandable form, i.e. zero frequency in size // 2 center
+    """
+    xp, _, _ = utils.get_array_module(data)
+
+    if human:
+        return xp.fft.ifftn(xp.fft.fftn(data) * xp.fft.ifftshift(filter)).real.astype(xp.float32)
+    else:
+        return xp.fft.ifftn(xp.fft.fftn(data) * filter).real.astype(xp.float32)
+
+
+def reduce_resolution_fourier(data, spacing, resolution):
     """
     NOTE: MOVE FUNCTION TO agnostic.FILTER
     Apply scipy gaussian filter in fourier space.
 
-    @param input: input to be filtered, either 2d or 3d array (however scipy will be able to handle higher
+    @param data: data to be filtered, either 2d or 3d array (however scipy will be able to handle higher
     dimensionality as well
-    @type  input: L{np.ndarray}
+    @type  data: L{np.ndarray}
     @param spacing: spacing of each pixel/voxel in relative units
     @type  spacing: L{float}
     @param resolution: desired resolution after filtering. maximal resolution is 2 * spacing, and thus resolution
@@ -64,45 +77,38 @@ def reduce_resolution_fourier(input, spacing, resolution):
 
     @author: Marten Chaillet
     """
-    gaussian_filter = create_gaussian_low_pass(input.shape, spacing, resolution)
-    if 'gpu' in device:
-        from pytom.agnostic.filter import applyFourierFilterFull
-        return applyFourierFilterFull(input, xp.fft.ifftshift(gaussian_filter))
-    else:
-        from pytom.agnostic.transform import fourier_filter
-        return fourier_filter(input, gaussian_filter, human=True)
+    xp, _, device = utils.get_array_module(data)
+
+    gaussian_filter = create_gaussian_low_pass(data.shape, spacing, resolution, device=device)
+    return apply_fourier_filter(data, gaussian_filter, human=True)
 
 
-def reduce_resolution_real(input, spacing, resolution):
+def reduce_resolution_real(data, spacing, resolution):
     """
     NOTE: MOVE FUNCTION TO agnostic.FILTER
     Apply scipy gaussian filter in real space.
 
-    @param input: input to be filtered, either 2d or 3d array (however scipy will be able to handle higher
+    @param data: data to be filtered, either 2d or 3d array (however scipy will be able to handle higher
     dimensionality as well
-    @type  input: L{np.ndarray}
+    @type  data: L{np.ndarray}
     @param spacing: spacing of each pixel/voxel in relative units
     @type  spacing: L{float}
     @param resolution: desired resolution after filtering. maximal resolution is 2 * spacing, and thus resolution
     value of 2 * spacing will not filter the image
     @type  resolution: L{float}
 
-    @return: filtered input, 2d or 3d array
+    @return: filtered data, 2d or 3d array
     @rtype:  L{np.ndarray}
 
     @author: Marten Chaillet
     """
-    assert 'cpu' in device, 'reducing resolution with gaussian kernel is done through scipy which for now only works ' \
-                            'on numpy arrays, and not cupy arrays'
-    #TODO might be done in newer cupy versions via cupyx.scipy
-
-    from scipy.ndimage import gaussian_filter
+    _, ndimage, _ = utils.get_array_module(data)
 
     # here it needs to be fwhm to sigma, while in fourier space hwhm to sigma
-    return gaussian_filter(input, sigma=fwhm_to_sigma(resolution / (2 * spacing)))
+    return ndimage.gaussian_filter(data, sigma=fwhm_to_sigma(resolution / (2 * spacing)))
 
 
-def gradient_image(size, factor, angle=0, center_shift=0):
+def gradient_image(size, factor, angle=0, center_shift=0, device='cpu'):
     """
     Creates an image with a gradient of values rotated along angle. Factor determines the strength of the gradient.
 
@@ -121,7 +127,8 @@ def gradient_image(size, factor, angle=0, center_shift=0):
 
     @author: Marten Chaillet
     """
-    from scipy.ndimage import rotate
+    xp, ndimage, _ = utils.get_array_module_from_device(device)
+
     max_rotation_radius = (size/2) / xp.cos(45 * xp.pi / 180)
     extension = int(xp.ceil(max_rotation_radius - size/2))
     left = 1 - factor
@@ -130,10 +137,10 @@ def gradient_image(size, factor, angle=0, center_shift=0):
     values = xp.arange(left - extension * step + center_shift * step,
                        right + extension * step + center_shift * step, step)
     image = xp.repeat(values[xp.newaxis, :], size + 2*extension, axis=0)
-    return rotate(image, angle, reshape=False)[extension:size+extension, extension:size+extension]
+    return ndimage.rotate(image, angle, reshape=False)[extension:size+extension, extension:size+extension]
 
 
-def create_circle(shape, radius=-1, sigma=0, center=None):
+def create_circle(shape, radius=-1, sigma=0, center=None, device='cpu'):
     """
     Create a circle with radius in an image of shape.
 
@@ -151,6 +158,7 @@ def create_circle(shape, radius=-1, sigma=0, center=None):
 
     @author: Marten Chaillet
     """
+    xp, _ = utils.get_array_module_from_device(device)
     assert len(shape) == 2
 
     if center is None:
@@ -170,7 +178,85 @@ def create_circle(shape, radius=-1, sigma=0, center=None):
     return sphere
 
 
-def bandpass_mask(shape, low=0, high=-1):
+def create_ellipsoid(size, mj, mn1, mn2, smooth=0, cutoff_SD=3, device='cpu'):
+    """
+    Generate an ellipse defined by 3 radii along x,y,z - parameters mj, mn1, mn2. Ellipse is generated in a square
+    volume with each dimension has same size.
+
+    @param size: length of dimensions
+    @type  size: L{int}
+    @param mj: major radius
+    @type  mj: L{float}
+    @param mn1: minor radius 1
+    @type  mn1: L{float}
+    @param mn2: minor radius 2
+    @type  mn2: L{float}
+    @param smooth: gaussian smoothing of ellips edges, where smooth is the sigma of gaussian function
+    @type  smooth: L{float}
+    @param cutoff_SD: number of standard deviations to determine gaussian smoothing to
+    @type  cutoff_SD: L{int}
+
+    @return: square volume with ellipse, 3d array of floats
+    @rtype:  L{np.ndarray}
+
+    @author: Marten Chaillet
+    """
+    xp, _ = utils.get_array_module_from_device(device)
+
+    X,Y,Z = xp.meshgrid(xp.arange(size/1), xp.arange(size/1), xp.arange(size/1))
+
+    X -= size/2-0.5
+    Y -= size/2-0.5
+    Z -= size/2-0.5
+
+    R = xp.sqrt( (X/mj)**2 + (Y/mn1)**2 + (Z/mn2)**2)
+
+    # print(R.max(), R.min())
+
+    out = xp.zeros((size,size,size),dtype=xp.float32)
+    out[ R <= 1] = 1
+
+    if smooth:
+        R2 = R.copy()
+        R2[R <= 1] = 1
+        sphere = xp.exp(-1 * ((R2-1)/smooth)**2)
+        sphere[sphere <= xp.exp(-cutoff_SD**2/2.)] = 0
+        out = sphere
+
+    return out
+
+
+def create_sphere(size, radius=-1, sigma=0, num_sigma=2, center=None, device='cpu'):
+    """Create a 3D sphere volume.
+    @param size: size of the resulting volume.
+    @param radius: radius of the sphere inside the volume.
+    @param sigma: sigma of the Gaussian.
+    @param center: center of the sphere.
+    @return: sphere inside a volume.
+    """
+    xp, _ = utils.get_array_module_from_device(device)
+
+    if size.__class__ == float or len(size) == 1:
+        size = (size, size, size)
+    assert len(size) == 3
+    if center is None:
+        center = [size[0]//2, size[1]//2, size[2]//2]
+    if radius == -1:
+        radius = min(size)//2
+
+    sphere = xp.zeros(size, dtype=xp.float32)
+    [x, y, z] = xp.mgrid[0:size[0], 0:size[1], 0:size[2]]
+    r = xp.sqrt((x-center[0])**2+(y-center[1])**2+(z-center[2])**2)
+    sphere[r <= radius] = 1
+
+    if sigma > 0:
+        ind = xp.logical_and(r > radius, r < radius+num_sigma*sigma)
+        sphere[ind] = xp.exp(-((r[ind] - radius)/sigma)**2/2)
+
+    return sphere
+
+
+def bandpass_mask(shape, low=0, high=-1, device='cpu'):
     """
     Return 2d bandpass mask in shape. Mask is created by subtracting a circle with radius low from a circle with
     radius high.
@@ -190,27 +276,27 @@ def bandpass_mask(shape, low=0, high=-1):
     assert low >= 0, "lower limit must be >= 0"
 
     if high == -1:
-        high = xp.min(shape) / 2
+        high = min(shape) / 2
     assert low < high, "upper bandpass must be > than lower limit"
 
     if low == 0:
-        mask = create_circle(shape, high, sigma=0)
+        mask = create_circle(shape, high, sigma=0, device=device)
     else:
-        mask = create_circle(shape, high, sigma=0) - create_circle(shape, low, sigma=0)
+        mask = create_circle(shape, high, sigma=0, device=device) - create_circle(shape, low, sigma=0, device=device)
 
     return mask
 
 
 def bin_volume(potential, factor):
     """
-    Bin the input volume (potential) factor times.
+    Bin the data volume (potential) factor times.
 
-    @param potential: input volume, 3d array
+    @param potential: data volume, 3d array
     @type  potential: L{np.ndarray}
     @param factor: integer multiple of 1, number of times to bin (or downsample)
     @type  factor: L{int}
 
-    @return: downsampled input, 3d array
+    @return: downsampled data, 3d array
     @rtype:  L{np.ndarray}
 
     @author: Marten Chaillet
@@ -242,53 +328,7 @@ def bin_volume(potential, factor):
     return binned
 
 
-def create_ellipse(size, mj, mn1, mn2, smooth=0, cutoff_SD=3):
-    """
-    Generate an ellipse defined by 3 radii along x,y,z - parameters mj, mn1, mn2. Ellipse is generated in a square
-    volume with each dimension has same size.
-
-    @param size: length of dimensions
-    @type  size: L{int}
-    @param mj: major radius
-    @type  mj: L{float}
-    @param mn1: minor radius 1
-    @type  mn1: L{float}
-    @param mn2: minor radius 2
-    @type  mn2: L{float}
-    @param smooth: gaussian smoothing of ellips edges, where smooth is the sigma of gaussian function
-    @type  smooth: L{float}
-    @param cutoff_SD: number of standard deviations to determine gaussian smoothing to
-    @type  cutoff_SD: L{int}
-
-    @return: square volume with ellipse, 3d array of floats
-    @rtype:  L{np.ndarray}
-
-    @author: Marten Chaillet
-    """
-    X,Y,Z = xp.meshgrid(xp.arange(size/1), xp.arange(size/1), xp.arange(size/1))
-
-    X -= size/2-0.5
-    Y -= size/2-0.5
-    Z -= size/2-0.5
-
-    R = xp.sqrt( (X/mj)**2 + (Y/mn1)**2 + (Z/mn2)**2)
-
-    # print(R.max(), R.min())
-
-    out = xp.zeros((size,size,size),dtype=xp.float32)
-    out[ R <= 1] = 1
-
-    if smooth:
-        R2 = R.copy()
-        R2[R <= 1] = 1
-        sphere = xp.exp(-1 * ((R2-1)/smooth)**2)
-        sphere[sphere <= xp.exp(-cutoff_SD**2/2.)] = 0
-        out = sphere
-
-    return out
-
-
-def add_correlated_noise(noise_size, dim):
+def add_correlated_noise(noise_size, dim, device='cpu'):
     """
     Add correlated noise to create density deformations.
 
@@ -302,54 +342,40 @@ def add_correlated_noise(noise_size, dim):
 
     @author: Marten Chaillet
     """
-    from numpy.fft import ifftn, fftn, fftshift
-    from numpy.random import random
+    xp, _ = utils.get_array_module_from_device(device)
 
     if noise_size == 0:
         # 0 value will not work
         noise_size = 1
 
-    noise_no_norm = abs(ifftn(fftshift(fftn(random((noise_size, noise_size, noise_size)))), [dim] * 3))
+    noise_no_norm = abs(xp.fft.ifftn(xp.fft.fftshift(xp.fft.fftn(xp.random((noise_size, noise_size, noise_size)))),
+                                     [dim] * 3))
     noise = 0.2 * noise_no_norm / abs(noise_no_norm).max()
 
     return 1 + (noise - noise.mean())
 
 
-def add_white_noise(volume, SNR=1):
-    """
-    Adds white (normal distributed) noise to a volume.
+def paste_in_center(volume, volume2):
+    l, l2 = len(volume.shape), len(volume.shape)
+    assert l == l2, "not same number of dims"
+    for i in range(l):
+        assert volume.shape[i] <= volume2.shape[i]
 
-    @param volume: the volume to be noise, 3d array of floats
-    @type  volume: L{np.ndarray}
-    @param SNR: signal to noise ratio of output, assuming input to contain no noise
-    @type  SNR: L{float}
+    if len(volume.shape) == 3:
+        sx, sy, sz = volume.shape
+        SX, SY, SZ = volume2.shape
+        if SX <= sx:
+            volume2[:,:,:] = volume[sx//2-SX//2:sx//2+SX//2+SX%2,
+                                    sy//2-SY//2:sy//2+SY//2+SY%2,
+                                    sz//2-SZ//2:sz//2+SZ//2+SZ%2 ]
+        else:
+            volume2[SX//2-sx//2:SX//2+sx//2+sx%2,
+                    SY//2-sy//2:SY//2+sy//2+sy%2,
+                    SZ//2-sz//2:SZ//2+sz//2+sz%2 ] = volume
+        return volume2
 
-    @return: noisy input volume with specified SNR, 3d array of floats
-    @rtype:  L{np.ndarray}
-
-    @author: Thomas Hrabe
-    """
-
-    if (SNR < 0):
-        return volume
-
-    from math import sqrt
-    from pytom_volume import vol, mean, variance, gaussianNoise
-
-    m = mean(volume)
-    s = sqrt(variance(volume, False) / SNR)  # SNR = Var(signal) / Var(noise)
-
-    #    s = sqrt(variance(volume,False)/SNR)-variance(volume,False)
-    #
-    #    if s<0:
-    #        return volume
-    #    elif s==0:
-    #        s =1
-
-    noise = vol(volume.sizeX(), volume.sizeY(), volume.sizeZ())
-
-    gaussianNoise(noise, m, s)  # s is actually the std
-
-    result = volume + noise
-
-    return result
+    if len(volume.shape) == 2:
+        sx, sy = volume.shape
+        SX, SY = volume2.shape
+        volume2[SX//2-sx//2:SX//2+sx//2+sx%2,SY//2-sy//2:SY//2+sy//2+sy%2] = volume
+        return volume2

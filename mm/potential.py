@@ -1,10 +1,15 @@
-#!/usr/bin/env pytom
+#!/usr/bin/env python
 
 import multiprocessing as mp
 import numpy as np
-import pytom.simulation.physics as physics
-import os, sys
-# from numba import jit
+import physics
+import os
+import sys
+import scipy.ndimage as ndimage
+import support
+import mrcfile
+import argparse
+import utils
 
 
 # // N should be len(atoms) // 3
@@ -155,20 +160,36 @@ def extend_volume(vol, increment, pad_value=0, symmetrically=False, true_center=
 
     @author: Marten Chaillet
     """
+    import voltools as vt
     if symmetrically:
         # condition = any([x%2 for x in increment])
         if true_center:
-            from pytom.voltools import transform
             new = np.pad(vol, tuple([(0, x) for x in increment]), 'constant', constant_values=pad_value)
-            return transform(new, translation=tuple([x/2 for x in increment]), interpolation=interpolation)
+            return vt.transform(new, translation=tuple([x/2 for x in increment]), interpolation=interpolation)
         else:
-            from pytom.agnostic.tools import paste_in_center
             new = np.zeros([a + b for a, b in zip(vol.shape, increment)])
             if pad_value:
                 new += pad_value
-            return paste_in_center(vol, new)
+            return support.paste_in_center(vol, new)
     else:
         return np.pad(vol, tuple([(0, x) for x in increment]), 'constant', constant_values=pad_value)
+
+
+def prepare_pdb(filepath, output_folder):
+    import pymol2
+
+    filename = os.path.splitext(os.path.split(filepath)[1])[0]
+    outfile = os.path.join(output_folder, filename + '_mm-prep.pdb')  # always save as pdb
+
+    with pymol2.PyMOL() as pymol:
+        pymol.cmd.load(filepath, 'myprotein')
+        pymol.cmd.select('waters', 'resn hoh')
+        pymol.cmd.remove('waters')
+        pymol.cmd.h_add()
+        pymol.cmd.symexp('sym', 'myprotein', '(myprotein)', '1')
+        pymol.cmd.save(outfile)
+
+    return outfile  # return modified file name
 
 
 def call_chimera(filepath, output_folder):
@@ -341,7 +362,7 @@ def modify_structure_file(filepath, pattern, replacement, line_start=''):
         with os.fdopen(fh, 'w') as new_file:
             with open(filepath) as old_file:
                 for line in old_file:
-                    if line_start=='':
+                    if line_start == '':
                         new_file.write(line.replace(pattern,replacement))
                     elif line.split()[0] == line_start:
                         new_file.write(line.replace(pattern,replacement))
@@ -393,7 +414,7 @@ def call_apbs(pdb_filepath, force_field='amber', ph=7.):
     apbs_config  = os.path.join(folder, f'{pdb_id}.in')
     try:
         # Also PDB2PKA ph calculation method. Requires PARSE force field, can take very long for large proteins.
-        os.system(f'pdb2pqr.py --ff={force_field} --ph-calc-method=propka --with-ph={ph} --apbs-input {pdb_filepath} {pqr_filepath}')
+        os.system(f'pdb2pqr --ff={force_field} --ph-calc-method=propka --with-ph={ph} --apbs-input {pdb_filepath} {pqr_filepath}')
         print(' - Add white space delimiters to pqr file.')
         modify_structure_file(pqr_filepath, '-', ' -', line_start='ATOM')
         # APBS needs to execute from the folder where the structure is present
@@ -413,9 +434,6 @@ def call_apbs(pdb_filepath, force_field='amber', ph=7.):
 def read_structure(filepath):
     """
     Read pdb, cif, or pqr file and return atom data in lists.
-
-    todo move to basic.files or agnostic.io ??
-
 
     @param filepath: full path to the file, either .pdb, .cif, or .pqr
     @type  filepath: L{str}
@@ -549,12 +567,8 @@ def create_gold_marker(voxel_size, solvent_potential, oversampling=1, solvent_fa
 
     @author: Marten Chaillet
     """
-    from pytom.agnostic.tools import create_sphere
-    from pytom.simulation.support import reduce_resolution_real, create_ellipse, add_correlated_noise
-    from pytom.agnostic.transform import resize
-
-    assert (type(oversampling) is int) and (oversampling >= 1), print('Stop gold marker creation oversampling factor is not a positive'
-                                                            ' integer.')
+    assert (type(oversampling) is int) and (oversampling >= 1), print('Stop gold marker creation oversampling factor'
+                                                                      ' is not a positive integer.')
 
     # select a random size for the gold marker in nm
     diameter = np.random.uniform(low=4.0, high=10.0)
@@ -574,11 +588,11 @@ def create_gold_marker(voxel_size, solvent_potential, oversampling=1, solvent_fa
     if ellipse:
         r2 = r * np.random.uniform(0.8, 1.2)
         r3 = r * np.random.uniform(0.8, 1.2)
-        bead = create_ellipse(dimension, r, r2, r3, smooth=2)
+        bead = support.create_ellipsoid(dimension, r, r2, r3, smooth=2)
     else:
-        bead = create_sphere((dimension,)*3, radius=r)
+        bead = support.create_sphere((dimension,)*3, radius=r)
 
-    bead *= add_correlated_noise(int(r*0.75), dimension) * add_correlated_noise(int(r*0.25), dimension)
+    bead *= support.add_correlated_noise(int(r*0.75), dimension) * support.add_correlated_noise(int(r*0.25), dimension)
     # SIGMA DEPENDENT ON VOXEL SIZE
     # rounded_sphere = gaussian3d(sphere, sigma=(1 * 0.25 / voxel_size_nm))
     bead[bead < 0.9] = 0 # remove too small values
@@ -593,8 +607,8 @@ def create_gold_marker(voxel_size, solvent_potential, oversampling=1, solvent_fa
         gold_amplitude = physics.potential_amplitude(physics.GOLD_DENSITY, physics.GOLD_MW, voltage)
         gold_imaginary = bead * (gold_amplitude - solvent_amplitude)
         # filter and bin
-        gold_imaginary = resize(reduce_resolution_real(gold_imaginary, 1, 2*oversampling), 1/oversampling,
-                                interpolation='Spline')
+        gold_imaginary = ndimage.zoom(support.reduce_resolution_real(gold_imaginary, 1, 2*oversampling),
+                                            1/oversampling, order=3)
 
     # values transformed to occupied volume per voxel from 1 nm**3 per voxel to actual voxel size
     solvent_correction = bead * (solvent_potential * solvent_factor)
@@ -608,7 +622,8 @@ def create_gold_marker(voxel_size, solvent_potential, oversampling=1, solvent_fa
     gold_potential = gold_atoms * gold_scattering_factors[0:5].sum() * C / voxel_volume / 1000
     gold_real = gold_potential - solvent_correction
     # filter and bin
-    gold_real = resize(reduce_resolution_real(gold_real, 1, 2*oversampling), 1/oversampling, interpolation='Spline')
+    gold_real = ndimage.zoom(support.reduce_resolution_real(gold_real, 1, 2*oversampling), 1/oversampling,
+                                   order=3)
 
     if imaginary:
         return gold_real, gold_imaginary
@@ -790,8 +805,6 @@ def iasa_integration_parallel(filepath, voxel_size=1., oversampling=1, solvent_e
     TODO: This function could be way more elegant using multiprocessing.shared_memory.SharedMemory. However this
     TODO: functionality is only available from python3.8 onwards.
     """
-    from pytom.agnostic.transform import resize
-    from pytom.simulation.support import reduce_resolution_fourier
     from functools import partial, reduce
     from contextlib import closing
     import operator
@@ -881,7 +894,7 @@ def iasa_integration_parallel(filepath, voxel_size=1., oversampling=1, solvent_e
         # construct solvent mask
         # gaussian decay of mask
         if oversampling == 1:
-            solvent_mask = reduce_resolution_fourier(solvent_mask, voxel_size, voxel_size * 2)
+            solvent_mask = support.reduce_resolution_fourier(solvent_mask, voxel_size, voxel_size * 2)
             solvent_mask[solvent_mask < 0.001] = 0
         # subtract solvent from the protein electrostatic potential
         real = (potential / dV * C) - (solvent_mask * V_sol)
@@ -918,11 +931,12 @@ def iasa_integration_parallel(filepath, voxel_size=1., oversampling=1, solvent_e
 
         if oversampling > 1:
             print('Rescaling after oversampling')
-            real = reduce_resolution_fourier(real, voxel_size, voxel_size * 2 * oversampling)
-            # TODO Bug with resizing!!
-            real = resize(real, 1 / oversampling, interpolation='Spline')
-            imaginary = resize(reduce_resolution_fourier(imaginary, voxel_size, voxel_size * 2 * oversampling),
-                               1 / oversampling, interpolation='Spline')
+            real = ndimage.zoom(support.reduce_resolution_fourier(real, voxel_size,
+                                                                        voxel_size * 2 * oversampling),
+                                      1 / oversampling, order=3)
+            imaginary = ndimage.zoom(support.reduce_resolution_fourier(imaginary, voxel_size,
+                                                                             voxel_size * 2 * oversampling),
+                                           1 / oversampling, order=3)
         return real + 1j * imaginary
     else:
         # extend volume to a box
@@ -932,8 +946,9 @@ def iasa_integration_parallel(filepath, voxel_size=1., oversampling=1, solvent_e
                       mode='constant', constant_values=0)
         if oversampling > 1:
             print('Rescaling after oversampling')
-            real = resize(reduce_resolution_fourier(real, voxel_size, voxel_size * 2 * oversampling),
-                          1 / oversampling, interpolation='Spline')
+            real = ndimage.zoom(support.reduce_resolution_fourier(real, voxel_size,
+                                                                        voxel_size * 2 * oversampling),
+                                      1 / oversampling, order=3)
         return real
 
 
@@ -975,15 +990,15 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
     @author: Marten Chaillet
     """
     import cupy as cp
-    from pytom.agnostic.transform import resize
-    from pytom.simulation.support import reduce_resolution_fourier
+    import voltools as vt
 
     # if (absorption_contrast) or (solvent_exclusion in ['gaussian', 'masking']) or (oversampling != 1):
     #     print('abs contrast, gaussian/masking solvent_exclusion, and oversampling still need to be implement for gpu')
     #     sys.exit(0)
 
     # cp set device ...
-    cp.cuda.Device(gpu_id).use()
+    device = 'gpu:' + str(gpu_id)
+    utils.switch_to_device(device)
 
     assert (type(oversampling) is int) and (oversampling >= 1), print('oversampling parameter is not an integer')
 
@@ -1052,8 +1067,8 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
 
     # distribute the atoms in multiple runs if there are too many
     for i in range(niter):
-        #TODO check that large systems are correctly split in batches
-        # set the subset index for this iteration
+        # TODO check that large systems are correctly split in batches
+        # TODO set the subset index for this iteration
         index = [i * atoms_per_iter, (i + 1) * atoms_per_iter if (i + 1) < niter else n_atoms]
 
         # move the selected atoms to gpu!
@@ -1102,7 +1117,7 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
         # construct solvent mask
         # gaussian decay of mask
         if oversampling == 1:
-            solvent_mask = reduce_resolution_fourier(solvent_mask, voxel_size, voxel_size * 2)
+            solvent_mask = support.reduce_resolution_fourier(solvent_mask, voxel_size, voxel_size * 2)
             solvent_mask[solvent_mask < 0.001] = 0
         # subtract solvent from the protein electrostatic potential
         real = (potential * (C / dV)) - (solvent_mask * V_sol)
@@ -1139,10 +1154,11 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
 
         if oversampling > 1:
             print('Rescaling after oversampling')
-            real = resize(reduce_resolution_fourier(real, voxel_size, voxel_size * 2 * oversampling),
-                          1 / oversampling, interpolation='Spline')
-            imaginary = resize(reduce_resolution_fourier(imaginary, voxel_size, voxel_size * 2 * oversampling),
-                               1 / oversampling, interpolation='Spline')
+            real = vt.transform(support.reduce_resolution_fourier(real, voxel_size, voxel_size * 2 * oversampling),
+                                scale=1 / oversampling, interpolation='filt_bspline')
+            imaginary = vt.transform(support.reduce_resolution_fourier(imaginary, voxel_size,
+                                                                       voxel_size * 2 * oversampling),
+                                     scale=1 / oversampling, interpolation='filt_bspline')
         return real + 1j * imaginary
     else:
         # extend volume to a box
@@ -1152,8 +1168,9 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
                       mode='constant', constant_values=0)
         if oversampling > 1:
             print('Rescaling after oversampling')
-            real = resize(reduce_resolution_fourier(real, voxel_size, voxel_size * 2 * oversampling),
-                          1 / oversampling, interpolation='Spline')
+            real = vt.transform(support.reduce_resolution_fourier(real, voxel_size,
+                                                                  voxel_size * 2 * oversampling),
+                                scale=1 / oversampling, interpolation='filt_bspline')
         return real
 
 
@@ -1195,8 +1212,6 @@ def iasa_integration(filepath, voxel_size=1., oversampling=1, solvent_exclusion=
 
     @author: Marten Chaillet
     """
-    from pytom.agnostic.transform import resize
-    from pytom.simulation.support import reduce_resolution_fourier
     from scipy.special import erf
 
     assert (type(oversampling) is int) and (oversampling >= 1), print('oversampling parameter is not an integer')
@@ -1327,7 +1342,7 @@ def iasa_integration(filepath, voxel_size=1., oversampling=1, solvent_exclusion=
         # construct solvent mask
         # gaussian decay of mask
         if oversampling == 1:
-            solvent_mask = reduce_resolution_fourier(solvent_mask, voxel_size, voxel_size * 2)
+            solvent_mask = support.reduce_resolution_fourier(solvent_mask, voxel_size, voxel_size * 2)
             solvent_mask[solvent_mask < 0.001] = 0
         # fig, (ax1, ax2) = plt.subplots(1, 2)
         # slice = int(solvent_mask.shape[2] // 2)
@@ -1355,14 +1370,14 @@ def iasa_integration(filepath, voxel_size=1., oversampling=1, solvent_exclusion=
                   'are not used.')
             sys.exit(0)
 
-        real = reduce_resolution_fourier(real, voxel_size, voxel_size*2*oversampling)
-        real = resize(real, 1/oversampling, interpolation='Spline')
-        imaginary = reduce_resolution_fourier(imaginary, voxel_size, voxel_size*2*oversampling)
-        imaginary = resize(imaginary, 1/oversampling, interpolation='Spline')
+        real = support.reduce_resolution_fourier(real, voxel_size, voxel_size*2*oversampling)
+        real = ndimage.zoom(real, 1/oversampling, order=3)
+        imaginary = support.reduce_resolution_fourier(imaginary, voxel_size, voxel_size*2*oversampling)
+        imaginary = ndimage.zoom(imaginary, 1/oversampling, order=3)
         return real + 1j * imaginary
     else:
-        real = reduce_resolution_fourier(real, voxel_size, voxel_size*2*oversampling)
-        return resize(real, 1/oversampling, interpolation='Spline')
+        real = support.reduce_resolution_fourier(real, voxel_size, voxel_size*2*oversampling)
+        return ndimage.zoom(real, 1/oversampling, order=3)
 
 
 def iasa_rough(filepath, voxel_size=10, oversampling=1, solvent_exclusion=False, V_sol=physics.V_WATER):
@@ -1388,9 +1403,6 @@ def iasa_rough(filepath, voxel_size=10, oversampling=1, solvent_exclusion=False,
 
     @author: Marten Chaillet
     """
-    from pytom.agnostic.transform import resize
-    from pytom.simulation.support import reduce_resolution_fourier
-
     assert (type(oversampling) is int) and (oversampling >= 1), print('oversampling parameter is not an integer')
     if oversampling > 1:
         voxel_size /= oversampling
@@ -1441,9 +1453,9 @@ def iasa_rough(filepath, voxel_size=10, oversampling=1, solvent_exclusion=False,
             else:  # If not H,C,O,N we assume the same volume displacement as for carbon
                 potential[ind] -= physics.volume_displaced['C'] * V_sol / dV
     # Apply Gaussian filter
-    potential = reduce_resolution_fourier(potential, 1, 2*oversampling)
+    potential = support.reduce_resolution_fourier(potential, 1, 2*oversampling)
     # Bin the volume
-    potential = resize(potential, 1/oversampling, interpolation='Spline')
+    potential = ndimage.zoom(potential, 1/oversampling, order=3)
 
     return potential
 
@@ -1468,13 +1480,10 @@ def iasa_potential(filepath, voxel_size=1., oversampling=1): # add params voxel_
 
     @author: Marten Chaillet
     """
-    from pytom.agnostic.transform import resize
-    from pytom.simulation.support import reduce_resolution_fourier
-
     assert (type(oversampling) is int) and (oversampling >= 1), print('oversampling parameter is not an integer')
     if oversampling > 1:
         voxel_size /= oversampling
-    print(f'IASA: volume will be sampled at {spacing}A')
+    print(f'IASA: volume will be sampled at {voxel_size}A')
 
     extra_space = 30  # extend volume by 10 A
 
@@ -1560,8 +1569,8 @@ def iasa_potential(filepath, voxel_size=1., oversampling=1): # add params voxel_
     potential -= physics.V_WATER
 
     # using spline interpolation here does not decrease our accuracy as the volume is already oversampled!
-    potential = reduce_resolution_fourier(potential, 1, 2*oversampling)
-    potential = resize(potential, 1/oversampling, interpolation='Spline')
+    potential = support.reduce_resolution_fourier(potential, 1, 2*oversampling)
+    potential = ndimage.zoom(potential, 1/oversampling, order=3)
 
     return potential
 
@@ -1630,10 +1639,6 @@ def resample_apbs(filepath, voxel_size=1.0):
 
     @author: Marten Chaillet
     """
-    from skimage.transform import rescale
-    from pytom.agnostic.transform import resize
-    from pytom.simulation.support import reduce_resolution_fourier
-
     print(f' - Parsing and resampling APBS file {filepath}')
 
     # Parse APBS data file
@@ -1648,12 +1653,11 @@ def resample_apbs(filepath, voxel_size=1.0):
     factor = (dxnew/dxnew, dynew/dxnew, dznew/dxnew)
     # Use skimage rescale for different factors along x, y, and z
     # order 3 for bi-cubic (splines), preserve_range otherwise image is returned as float between -1 and 1
-    potential = rescale(potential, factor, mode='constant', order=3, preserve_range=True, multichannel=False,
-                        anti_aliasing=False)
+    potential = ndimage.zoom(potential, factor, order=3)
     # filter volume before downsampling to voxel_size
-    potential = reduce_resolution_fourier(potential, dxnew, 2*voxel_size)
+    potential = support.reduce_resolution_fourier(potential, dxnew, 2*voxel_size)
     # Scale the volume to voxels with voxel_size
-    potential = resize(potential, dxnew/voxel_size, interpolation='Spline')
+    potential = ndimage.zoom(potential, dxnew/voxel_size, order=3)
 
     print(f'Data after reshaping to {voxel_size} A voxels: {potential.shape}')
 
@@ -1679,8 +1683,6 @@ def combine_potential(potential1, potential2):
 
     @author: Marten Chaillet
     """
-    from pytom.simulation.support import reduce_resolution_fourier
-
     print(' - Combining iasa and bond potential')
 
     size1 = potential1.shape
@@ -1691,9 +1693,9 @@ def combine_potential(potential1, potential2):
     ext2 = [(s1 - s2 if s1 > s2 else 0) for s1, s2 in zip(size1, size2)]
 
     # extend volumes and filter before interpolating
-    potential1_ext = extend_volume(reduce_resolution_fourier(potential1, 1, 2),
+    potential1_ext = extend_volume(support.reduce_resolution_fourier(potential1, 1, 2),
                                    ext1, symmetrically=True, true_center=True)
-    potential2_ext = extend_volume(reduce_resolution_fourier(potential2, 1, 2),
+    potential2_ext = extend_volume(support.reduce_resolution_fourier(potential2, 1, 2),
                                    ext2, symmetrically=True, true_center=True)
 
     potential_combined = potential1_ext + potential2_ext
@@ -1737,10 +1739,6 @@ def wrapper(filepath, output_folder, voxel_size, oversampling=1, binning=1, solv
 
     @author: Marten Chaillet
     """
-    from pytom.agnostic.io import write
-    from pytom.agnostic.transform import resize
-    from pytom.simulation.support import reduce_resolution_fourier
-
     # Id does not makes sense to apply absorption contrast if solvent exclusion is not turned on
     if absorption_contrast:
         assert solvent_exclusion is not None, print('absorption contrast can only be applied if solvent exclusion is '
@@ -1756,11 +1754,13 @@ def wrapper(filepath, output_folder, voxel_size, oversampling=1, binning=1, solv
 
     # Call external programs for structure preparation and PB-solver
     # call_apbs(folder, structure, ph=ph)
-    try:
-        filepath = call_chimera(filepath, os.path.split(filepath)[0])  # output structure name is dependent on
-        # modification by chimera
-    except Exception as e:
-        print(e)
+    # try:
+    #     filepath = call_chimera(filepath, os.path.split(filepath)[0])  # output structure name is dependent on
+    #     # modification by chimera
+    # except Exception as e:
+    #     print(e)
+
+    filepath = prepare_pdb(filepath, output_folder)
 
     assert filepath != 0, 'something went wrong with chimera'
 
@@ -1783,15 +1783,22 @@ def wrapper(filepath, output_folder, voxel_size, oversampling=1, binning=1, solv
     if np.iscomplexobj(v_atom):
         output_name = f'{pdb_id}_{voxel_size:.2f}A_solvent-{solvent_potential*solvent_factor:.3f}V'
         print(f'writing real and imaginary part with name {output_name}')
-        write(os.path.join(output_folder, f'{output_name}_real.mrc'), v_atom.real)
-        write(os.path.join(output_folder, f'{output_name}_imag_{voltage*1E-3:.0f}V.mrc'), v_atom.imag)
+        with mrcfile.new(os.path.join(output_folder, f'{output_name}_real.mrc'), overwrite=True) as mrc:
+            mrc.set_data(v_atom.real)
+            mrc.voxel_size = voxel_size
+        with mrcfile.new(os.path.join(output_folder, f'{output_name}_imag_{voltage*1E-3:.0f}V.mrc'),
+                         overwrite=True) as mrc:
+            mrc.set_data(v_atom.imag)
+            mrc.voxel_size = voxel_size
     else:
         if solvent_exclusion:
             output_name = f'{pdb_id}_{voxel_size:.2f}A_solvent-{solvent_potential*solvent_factor:.3f}V'
         else:
             output_name = f'{pdb_id}_{voxel_size:.2f}A'
         print(f'writing real part with name {output_name}')
-        write(os.path.join(output_folder, f'{output_name}_real.mrc'), v_atom)
+        with mrcfile.new(os.path.join(output_folder, f'{output_name}_real.mrc'), overwrite=True) as mrc:
+            mrc.set_data(v_atom)
+            mrc.voxel_size = voxel_size
 
     if binning > 1:
         # v_atom_binned = iasa_integration(f'{output_folder}/{structure}.pdb', voxel_size=voxel_size*binning,
@@ -1799,81 +1806,83 @@ def wrapper(filepath, output_folder, voxel_size, oversampling=1, binning=1, solv
         # first filter the volume!
         if np.iscomplexobj(v_atom):
             print(' - Binning volume')
-            filtered = [reduce_resolution_fourier(v_atom.real, voxel_size, voxel_size * 2 * binning),
-                        reduce_resolution_fourier(v_atom.imag, voxel_size, voxel_size * 2 * binning)]
-            binned = [resize(filtered.real, 1/binning, interpolation='Spline'),
-                      resize(filtered.imag, 1/binning, interpolation='Spline')]
+            filtered = [support.reduce_resolution_fourier(v_atom.real, voxel_size, voxel_size * 2 * binning),
+                        support.reduce_resolution_fourier(v_atom.imag, voxel_size, voxel_size * 2 * binning)]
+            binned = [ndimage.zoom(filtered[0], 1/binning, order=3),
+                      ndimage.zoom(filtered[1], 1/binning, order=3)]
 
             output_name = f'{pdb_id}_{voxel_size*binning:.2f}A_solvent-{solvent_potential*solvent_factor:.3f}V'
             print(f'writing real and imaginary part with name {output_name}')
-            write(os.path.join(output_folder, f'{output_name}_real.mrc'), binned[0])
-            write(os.path.join(output_folder, f'{output_name}_imag_{voltage*1E-3:.0f}V.mrc'), binned[1])
+            with mrcfile.new(os.path.join(output_folder, f'{output_name}_real.mrc'), overwrite=True) as mrc:
+                mrc.set_data(binned[0])
+                mrc.voxel_size = voxel_size*binning
+            with mrcfile.new(os.path.join(output_folder, f'{output_name}_imag_{voltage * 1E-3:.0f}V.mrc'),
+                             overwrite=True) as mrc:
+                mrc.set_data(binned[1])
+                mrc.voxel_size = voxel_size*binning
 
         else:
             print(' - Binning volume')
-            filtered = reduce_resolution_fourier(v_atom, voxel_size, 2 * voxel_size * binning)
-            binned = resize(filtered, 1/binning, interpolation='Spline')
+            filtered = support.reduce_resolution_fourier(v_atom, voxel_size, 2 * voxel_size * binning)
+            binned = ndimage.zoom(filtered, 1/binning, order=3)
             if solvent_exclusion:
                 output_name = f'{pdb_id}_{voxel_size*binning:.2f}A_solvent-{solvent_potential*solvent_factor:.3f}V'
             else:
                 output_name = f'{pdb_id}_{voxel_size*binning:.2f}A'
             print(f'writing real part with name {output_name}')
-            write(os.path.join(output_folder, f'{output_name}_real.mrc'), binned)
+            with mrcfile.new(os.path.join(output_folder, f'{output_name}_real.mrc'), overwrite=True) as mrc:
+                mrc.set_data(binned)
+                mrc.voxel_size = voxel_size * binning
     return
 
 
 if __name__ == '__main__':
-    # IN ORDER TO FUNCTION, SCRIPT REQUIRES INSTALLATION OF PYTOM (and dependencies), CHIMERA, PDB2PQR (modified), APBS
+    # SOME OF THE SCRIPT FUNCTIONALITY DEPEDNS ON CHIMERA (1.12; not tested with chimeraX), PDB2PQR (modified), APBS
+    parser = argparse.ArgumentParser(description='Calculate electrostatic potential from protein structure file. This '
+                                                 'script will automatically attempt to call chimera to add '
+                                                 'hydrogens to a pdb. For improved electrostatic potential its '
+                                                 'possible to run in combination with PDB2PQR and APBS. But this '
+                                                 'might only matter at very small pixel sizes. Behaviour with APBS is '
+                                                 'also not fully tested. -- Marten Chaillet (@McHaillet)')
+    parser.add_argument('-f', '--file', type=str, required=True,
+                        help='File path with protein structure, either pdb or cif.')
+    parser.add_argument('-d', '--destination', type=str, required=False, default='./',
+                        help='Folder to store the files produced by potential.py. Default is current folder.')
+    parser.add_argument('-s', '--spacing', type=float, required=False, default=1.,
+                        help='The size of the voxels of the output volume. 1A by default.')
+    parser.add_argument('-n', '--oversampling', type=int, required=False, nargs='?', const=2, default=1,
+                        help='n times pixel size oversampling. If argument is provided without value, will '
+                             'oversample 2 times.')
+    parser.add_argument('-b', '--binning', type=int, required=False, default=1,
+                        help='Number of times to bin. Additional storage of binned volume.')
+    parser.add_argument('-x', '--exclude-solvent', type=str, required=False, choices=['gaussian', 'masking'],
+                        help='Whether to exclude solvent around each atom as a correction of the potential, '
+                             'either "gaussian" or "masking".')
+    parser.add_argument('-p', '--solvent-potential', type=float, required=False, default=physics.V_WATER,
+                        help=f'Value for the solvent potential. By default amorphous ice, {physics.V_WATER} V.')
+    parser.add_argument('-a', '--absorption-contrast', action='store_true', default=False, required=False,
+                        help='Whether to generate imaginary part of molecule potential, can only be done if solvent'
+                             'is excluded.')
+    parser.add_argument('-v', '--voltage', type=float, required=False, default=300,
+                        help='Value for the electron acceleration voltage. Needed for calculating the inelastic mean '
+                             'free path in case of absorption contrast calculation. By default 300 (keV).')
+    parser.add_argument('-c', '--cores', type=int, required=False, default=1,
+                        help='Number of cpu cores to use for the calculation.')
+    parser.add_argument('-g', '--gpu-id', type=int, required=False,
+                        help='GPU index to run the program on.')
 
-    from pytom.tools.script_helper import ScriptHelper2, ScriptOption2
-    from pytom.tools.parse_script_options import parse_script_options2
+    args = parser.parse_args()
+    # check if io locations are valid
+    if not os.path.exists(args.file):
+        print('Input file does not exist, exiting...')
+        sys.exit(0)
+    if not os.path.exists(args.destination):
+        print('Destination for writing files does not exist, exiting...')
+        sys.exit(0)
 
-    # syntax is ScriptOption([short, long], description, requires argument, is optional)
-    helper = ScriptHelper2(
-        sys.argv[0].split('/')[-1],  # script name
-        description='Calculate electrostatic potential from protein structure file.\n Script has dependencies on '
-                    'pytom, chimera. (pdb2pqr apbs)',
-        authors='Marten Chaillet',
-        options=[ScriptOption2(['-f', '--file'], 'File path with protein structure, either pdb or cif.', 'file',
-                               'required'),
-               ScriptOption2(['-d', '--destination'], 'Folder to store the files produced by potential.py.',
-                             'directory', 'optional', './'),
-               ScriptOption2(['-s', '--spacing'], 'The size of the voxels of the output volume. 1A by default.',
-                             'float', 'required'),
-               ScriptOption2(['-n', '--oversampling'], 'n times pixel size oversampling.', 'int', 'optional', 1),
-               ScriptOption2(['-b', '--binning'], 'Number of times to bin. Additional storage of binned volume.',
-                             'int', 'optional', 1),
-               ScriptOption2(['-x', '--exclude_solvent'],
-                             'Whether to exclude solvent around each atom as a correction of the potential, '
-                             'either "gaussian" or "masking".', 'string',
-                             'optional'),
-               ScriptOption2(['-p', '--solvent_potential'],
-                             f'Value for the solvent potential. By default amorphous ice, {physics.V_WATER} V.',
-                             'float', 'optional', physics.V_WATER),
-               ScriptOption2(['-c', '--percentile'], 'Multiplication for solvent potential and absorption contrast of '
-                                                    'solvent to decrease/increase contrast. Value between 0 and 3 (could'
-                                                    ' be higher but would not make sense).', 'float', 'optional', 1),
-               ScriptOption2(['-a', '--absorption_contrast'],
-                             'Whether to add imaginary part of absorption contrast, can only be done if solvent'
-                             'is excluded.', 'no arguments', 'optional'),
-               ScriptOption2(['-v', '--voltage'],
-                             'Value for the electron acceleration voltage. Need for calculating the inelastic mean '
-                             'free '
-                             'path in case of absorption contrast calculation. By default 300 (keV).', 'float',
-                             'optional', 300),
-               ScriptOption2(['--cores'], 'Number of cpu cores to use for the calculation.', 'int', 'optional', 1),
-               ScriptOption2(['-g', '--gpuID'], 'GPU index to run the program on.', 'int', 'optional')])
-
-    options = parse_script_options2(sys.argv[1:], helper)
-
-    filepath, output_folder, voxel_size, oversampling, binning, solvent_exclusion, solvent_potential, solvent_factor, \
-        absorption_contrast, voltage, cores, gpuID = options
-
-    voltage *= 1e3
-
-    wrapper(filepath, output_folder, voxel_size, oversampling=oversampling, binning=binning,
-            solvent_exclusion=solvent_exclusion, solvent_potential=solvent_potential,
-            absorption_contrast=absorption_contrast, voltage=voltage, solvent_factor=solvent_factor, cores=cores,
-            gpu_id=gpuID)
+    wrapper(args.file, args.destination, args.spacing, oversampling=args.oversampling, binning=args.binning,
+            solvent_exclusion=args.exclude_solvent, solvent_potential=args.solvent_potential,
+            absorption_contrast=args.absorption_contrast, voltage=args.voltage * 1e3, cores=args.cores,
+            gpu_id=args.gpu_id)
 
 

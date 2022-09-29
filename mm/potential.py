@@ -20,10 +20,11 @@ import utils
 iasa_integrate_text = '''
 #define M_PI 3.141592654
 
-extern "C" __global__ 
-void iasa_integrate(float3 *atoms, unsigned char *elements, float *b_factors, float *occupancies, 
+extern "C" __global__ void iasa_integrate(
+                    float3 *atoms, unsigned char *elements, float *b_factors, float *occupancies, 
                     float *potential, float *solvent, float *scattering_factors, unsigned int *potential_dims,
-                    float *displaced_volume, float voxel_size, unsigned int n_atoms, unsigned char exclude_solvent) {
+                    float *displaced_volume, float voxel_size, unsigned int n_atoms, unsigned char exclude_solvent) 
+{
     // exclude_solvent is used a Boolean value
     
     // get the atom index                                                                                                                                      
@@ -105,21 +106,21 @@ void iasa_integrate(float3 *atoms, unsigned char *elements, float *b_factors, fl
                     for (j = 0; j < 5; j++) {
                         sqrt_b = sqrt(b[j]);
                         pi2_sqrt_b = pi2 / sqrt_b;
-                        factor3 = pow(sqrt_b / (4 * sqrt_pi), 3);
+                        factor3 = powf(sqrt_b / (4 * sqrt_pi), 3);
                         
                         integral_x = (erf(voxel_bound_max.x * pi2_sqrt_b) - erf(voxel_bound_min.x * pi2_sqrt_b));
                         integral_y = (erf(voxel_bound_max.y * pi2_sqrt_b) - erf(voxel_bound_min.y * pi2_sqrt_b));
                         integral_z = (erf(voxel_bound_max.z * pi2_sqrt_b) - erf(voxel_bound_min.z * pi2_sqrt_b));
                         integral_voxel = integral_x * integral_y * integral_z * factor3;
                         
-                        atom_voxel_pot += (a[j] / pow(b[j], (float)3 / 2)) * integral_voxel;
+                        atom_voxel_pot += (a[j] / powf(b[j], (float)3 / 2)) * integral_voxel;
                     };
                     
                     potent_idx = l * potential_dims[1] * potential_dims[2] + m * potential_dims[2] + n;
                     atomicAdd( potential + potent_idx, atom_voxel_pot );
                     
                     if (exclude_solvent == 1) {
-                        factor3 = pow(sqrt_pi * r0 / 2, 3);
+                        factor3 = powf(sqrt_pi * r0 / 2, 3);
                         
                         integral_x = erf(voxel_bound_max.x / r0) - erf(voxel_bound_min.x / r0);
                         integral_y = erf(voxel_bound_max.y / r0) - erf(voxel_bound_min.y / r0);
@@ -160,19 +161,22 @@ def extend_volume(vol, increment, pad_value=0, symmetrically=False, true_center=
 
     @author: Marten Chaillet
     """
-    import voltools as vt
+    import voltools as vt  # can be moved to top of file once voltools has been udpated
+    xp, _, device = utils.get_array_module(vol)
+
     if symmetrically:
         # condition = any([x%2 for x in increment])
         if true_center:
-            new = np.pad(vol, tuple([(0, x) for x in increment]), 'constant', constant_values=pad_value)
-            return vt.transform(new, translation=tuple([x/2 for x in increment]), interpolation=interpolation)
+            new = xp.pad(vol, tuple([(0, x) for x in increment]), 'constant', constant_values=pad_value)
+            return vt.transform(new, translation=tuple([x/2 for x in increment]), interpolation=interpolation,
+                                device=device)
         else:
-            new = np.zeros([a + b for a, b in zip(vol.shape, increment)])
+            new = xp.zeros([a + b for a, b in zip(vol.shape, increment)])
             if pad_value:
                 new += pad_value
             return support.paste_in_center(vol, new)
     else:
-        return np.pad(vol, tuple([(0, x) for x in increment]), 'constant', constant_values=pad_value)
+        return xp.pad(vol, tuple([(0, x) for x in increment]), 'constant', constant_values=pad_value)
 
 
 def prepare_pdb(filepath, output_folder):
@@ -990,6 +994,7 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
     @author: Marten Chaillet
     """
     import cupy as cp
+    import cupyx.scipy.ndimage as ndimage
     import voltools as vt
 
     # if (absorption_contrast) or (solvent_exclusion in ['gaussian', 'masking']) or (oversampling != 1):
@@ -1062,7 +1067,7 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
     print(f'Number of atoms to go over is {n_atoms}')
 
     # create kernel
-    iasa_integrate = cp.RawKernel(iasa_integrate_text, 'iasa_integrate')
+    iasa_integrate = cp.RawKernel(code=iasa_integrate_text, name='iasa_integrate')
     mempool = cp.get_default_memory_pool()
 
     # distribute the atoms in multiple runs if there are too many
@@ -1154,11 +1159,11 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
 
         if oversampling > 1:
             print('Rescaling after oversampling')
-            real = vt.transform(support.reduce_resolution_fourier(real, voxel_size, voxel_size * 2 * oversampling),
-                                scale=1 / oversampling, interpolation='filt_bspline')
-            imaginary = vt.transform(support.reduce_resolution_fourier(imaginary, voxel_size,
+            real = ndimage.zoom(support.reduce_resolution_fourier(real, voxel_size, voxel_size * 2 * oversampling),
+                                1 / oversampling, order=3)
+            imaginary = ndimage.zoom(support.reduce_resolution_fourier(imaginary, voxel_size,
                                                                        voxel_size * 2 * oversampling),
-                                     scale=1 / oversampling, interpolation='filt_bspline')
+                                     1 / oversampling, order=3)
         return real + 1j * imaginary
     else:
         # extend volume to a box
@@ -1168,9 +1173,8 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
                       mode='constant', constant_values=0)
         if oversampling > 1:
             print('Rescaling after oversampling')
-            real = vt.transform(support.reduce_resolution_fourier(real, voxel_size,
-                                                                  voxel_size * 2 * oversampling),
-                                scale=1 / oversampling, interpolation='filt_bspline')
+            real = ndimage.zoom(support.reduce_resolution_fourier(real, voxel_size, voxel_size * 2 * oversampling),
+                                1 / oversampling, order=3)
         return real
 
 
@@ -1772,7 +1776,7 @@ def wrapper(filepath, output_folder, voxel_size, oversampling=1, binning=1, solv
         v_atom = iasa_integration_gpu(filepath, voxel_size=voxel_size, oversampling=oversampling,
                                   solvent_exclusion=solvent_exclusion,
                                   V_sol=solvent_potential * solvent_factor, absorption_contrast=absorption_contrast,
-                                  voltage=voltage, gpu_id=gpu_id)
+                                  voltage=voltage, gpu_id=gpu_id).get()
     else:
         v_atom = iasa_integration_parallel(filepath, voxel_size=voxel_size, oversampling=oversampling,
                                   solvent_exclusion=solvent_exclusion,

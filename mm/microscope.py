@@ -56,7 +56,7 @@ def fourier_grids(shape, nyquist, indexing='ij', reduced=False, device='cpu'):
 def normalised_grid(shape, reduced=False, device='cpu'):
     xp, _ = utils.get_array_module_from_device(device)
 
-    grids = fourier_grids(shape, 1, reduced=reduced)
+    grids = fourier_grids(shape, 1, reduced=reduced, device=device)
     return xp.sqrt(sum([g**2 for g in grids]))
 
 
@@ -744,7 +744,7 @@ def test_defocus_grid_time(shape, ntests=100, device='cpu'):
     # Initialize parameters
     df1 = 4e-6
     df2 = 2e-6
-    xx, yy = fourier_grids(shape, 1/(2*2.62e-10))
+    xx, yy = fourier_grids(shape, 1/(2*2.62e-10), device=device)
     astigmatism_angle_deg = 30
     astigmatism_angle_rad = xp.deg2rad(astigmatism_angle_deg)
     defocus, astigmatism = convert_defocusU_defocusV_to_defocus_astigmatism(df1, df2)

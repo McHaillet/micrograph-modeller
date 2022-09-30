@@ -461,12 +461,20 @@ def read_structure(filepath):
         PDB example
         ATOM   4366  OXT SER I 456      10.602  32.380  -1.590  1.00 53.05           O
                     '''
-                    x_coordinates.append(float(line[30:38]))
-                    y_coordinates.append(float(line[38:46]))
-                    z_coordinates.append(float(line[46:54]))
-                    elements.append(line[76:78].strip())
-                    b_factors.append(float(line[60:66]))
-                    occupancies.append(float(line[54:60]))
+                    if line[76:78].strip() != '':
+                        x_coordinates.append(float(line[30:38]))
+                        y_coordinates.append(float(line[38:46]))
+                        z_coordinates.append(float(line[46:54]))
+                        elements.append(line[76:78].strip())
+                        b_factors.append(float(line[60:66]))
+                        occupancies.append(float(line[54:60]))
+                    else:  # for bare pdb files without b_factor/occup/element
+                        x_coordinates.append(float(line[30:38]))
+                        y_coordinates.append(float(line[38:46]))
+                        z_coordinates.append(float(line[46:54]))
+                        elements.append(line[13])
+                        b_factors.append(1.)
+                        occupancies.append(1.)
                 hetatms = [line for line in lines if line[:6] == 'HETATM']
                 for line in hetatms:
                     '''
@@ -823,6 +831,8 @@ def iasa_integration_parallel(filepath, voxel_size=1., oversampling=1, solvent_e
     else:
         print(f' - Calculating IASA potential from structure tuple')
         x_coordinates, y_coordinates, z_coordinates, elements, b_factors, occupancies = structure_tuple
+
+    # print(elements)
 
     # fix voxel size by oversampling
     if oversampling > 1:
@@ -1764,7 +1774,11 @@ def wrapper(filepath, output_folder, voxel_size, oversampling=1, binning=1, solv
     # except Exception as e:
     #     print(e)
 
-    filepath = prepare_pdb(filepath, output_folder)
+    # try:
+    #     filepath = prepare_pdb(filepath, output_folder)
+    # except Exception as e:
+    #     print(e)
+    #     pass
 
     assert filepath != 0, 'something went wrong with chimera'
 

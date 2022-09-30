@@ -348,7 +348,8 @@ def add_correlated_noise(noise_size, dim, device='cpu'):
         # 0 value will not work
         noise_size = 1
 
-    noise_no_norm = abs(xp.fft.ifftn(xp.fft.fftshift(xp.fft.fftn(xp.random((noise_size, noise_size, noise_size)))),
+    noise_no_norm = abs(xp.fft.ifftn(xp.fft.fftshift(xp.fft.fftn(xp.random.random((noise_size, noise_size,
+                                                                                  noise_size)))),
                                      [dim] * 3))
     noise = 0.2 * noise_no_norm / abs(noise_no_norm).max()
 

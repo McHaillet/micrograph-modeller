@@ -996,6 +996,8 @@ def membrane_potential(surface_mesh, voxel_size, membrane_pdb, solvent, voltage,
 
 
 if __name__ == '__main__':
+    # more lipid bilayer boxes: https://people.ucalgary.ca/~tieleman/download.html
+
     import time
     import os
     import sys

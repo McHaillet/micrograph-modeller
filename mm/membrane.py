@@ -8,48 +8,78 @@ Author: Marten Chaillet
 
 # essential
 import numpy as np
-import pytom.simulation.physics as physics
+import physics
 from numba import jit
 
 
+# ========================================= VECTOR CLASS AND Z ROT MATRIX ==============================================
 class Vector:
     # Class can be used as both a 3d coordinate, and a vector
+    # TODO SCIPY probably also has a vector class
     def __init__(self, coordinates):
+        """
+        Init vector with (x,y,z) coordinates, assumes (0,0,0) origin.
+        """
         assert len(coordinates) == 3, 'Invalid axis list for a 3d vector, input does not contain 3 coordinates.'
         self._axis = np.array(coordinates)
         self._zero_vector = np.all(self._axis==0)
 
     def get(self):
+        """
+        Return vector in numpy array.
+        """
         return self._axis
 
     def show(self):
+        """
+        Print the vector.
+        """
         print(self._axis)
 
     def copy(self):
+        """
+        Return a copy of the vector (also class Vector).
+        """
         return Vector(self.get())
 
     def inverse(self):
+        """
+        Inverse the vector (in place).
+        """
         self._axis *= -1
 
     def cross(self, other):
+        """
+        Get cross product of self and other Vector. Return as new vector.
+        """
         return Vector([self._axis[1] * other._axis[2] - self._axis[2] * other._axis[1],
                        self._axis[2] * other._axis[0] - self._axis[0] * other._axis[2],
                        self._axis[0] * other._axis[1] - self._axis[1] * other._axis[0]])
 
     def dot(self, other):
-        # return the dot product of vectors v1 and v2, of form (x,y,z)
-        # dot product of two vectors is zero if they are perpendicular
+        """
+        Return the dot product of vectors v1 and v2, of form (x,y,z).
+        Dot product of two vectors is zero if they are perpendicular.
+        """
         return self._axis[0] * other._axis[0] + self._axis[1] * other._axis[1] + self._axis[2] * other._axis[2]
 
     def magnitude(self):
-        # calculate the magnitude (length) of vector p
+        """
+        Calculate the magnitude (length) of vector p.
+        """
         return np.sqrt(np.sum(self._axis ** 2))
 
     def normalize(self):
+        """
+        Normalize self by dividing by magnitude.
+        """
         if not self._zero_vector:
             self._axis = self._axis / self.magnitude()
 
     def angle(self, other, degrees=False):
+        """
+        Get angle between self and other.
+        """
         # returns angle in radians
         if self._zero_vector or other._zero_vector:
             angle = 0
@@ -61,9 +91,15 @@ class Vector:
             return angle
 
     def rotate(self, rotation_matrix):
+        """
+        Rotate the vector in place by the rotation matrix.
+        """
         self._axis = np.dot(self._axis, rotation_matrix)
 
     def _get_orthogonal_unit_vector(self):
+        """
+        Get some orthogonal unit vector, multiple solutions are possible. Private method used in get rotation.
+        """
         # A vector orthogonal to (a, b, c) is (-b, a, 0), or (-c, 0, a) or (0, -c, b).
         if self._zero_vector:
             return Vector([1, 0, 0])  # zero vector is orthogonal to any vector
@@ -85,11 +121,7 @@ class Vector:
 
     def get_rotation(self, other):
         """
-        Get rotation to rotate other onto self. Take the transpose to rotate self onto other.
-        :param other:
-        :type other:
-        :return:
-        :rtype:
+        Get rotation to rotate other vector onto self. Take the transpose of result to rotate self onto other.
         """
         if self._zero_vector or other._zero_vector:
             return np.identity(3)
@@ -133,13 +165,24 @@ class Vector:
 
 
 def z_axis_rotation_matrix(angle):
+    """
+    Get a z-axis rotation matrix specified by angle in degrees.
+    TODO scipy probably also has a function for this
+    """
     m00 = np.cos(angle*np.pi/180)
     m01 = - np.sin(angle*np.pi/180)
     m10 = np.sin(angle*np.pi/180)
     m11 = np.cos(angle*np.pi/180)
-    return np.array([[m00,m01,0], [m10,m11,0], [0,0,1]])
+    return np.array([[m00, m01, 0], [m10, m11, 0], [0, 0, 1]])
 
 
+def rotation_matrix_to_affine_matrix(rotation_matrix):
+    m = np.identity(4)
+    m[0:3, 0:3] = rotation_matrix
+    return m
+
+
+# ======================================= DISTANCE BETWEEN TWO POINTS ==================================================
 def distance_nonsqrt(p1, p2):
     return sum((p1 - p2) ** 2)
 
@@ -149,6 +192,7 @@ def distance(p1, p2):
     return np.sqrt(sum(dd))
 
 
+# ======================================== SAMPLING POINTS ON ELLIPSE AND ELLIPSOID ====================================
 def get_point_ellipsoid(a, b, c, theta, phi):
     sinTheta = np.sin(theta)
     cosTheta = np.cos(theta)
@@ -175,6 +219,39 @@ def random_point_ellipsoid(a, b, c):
     return get_point_ellipsoid(a, b, c, theta, phi)
 
 
+def get_point_ellipse(a, b, theta):
+    rx = a * np.cos(theta)
+    ry = b * np.sin(theta)
+    return np.array([rx, ry])
+
+
+def random_point_ellipse(a, b):
+    u = np.random.rand()
+    theta = u * 2.0 * np.pi
+    return get_point_ellipse(a, b, theta)
+
+
+# ================================ DISTANCE MATRIX WRAPPER FOR ELLIPSE POINT ===========================================
+class DistanceMatrix:
+    def __init__(self, points):
+        from scipy.spatial.distance import cdist
+        self.matrix = cdist(points, points, metric='sqeuclidean')  # squared euclidean because we compare distance
+        # remove the points correlating with themselves
+        self.upper = np.max(self.matrix)
+        self.matrix[self.matrix == 0] = self.upper
+
+    def update(self, points, new_point_index):
+        dist_update = np.sum((points - points[new_point_index]) ** 2, axis=1)  # squared euclidean (see above)
+        # remove point correlating with itself
+        dist_update[dist_update == 0] = self.upper
+        self.matrix[new_point_index, :] = dist_update
+        self.matrix[:, new_point_index] = dist_update
+
+    def shortest_distance(self):
+        return np.unravel_index(self.matrix.argmin(), self.matrix.shape)
+
+
+# ============================= HELPER FUNCTIONS FOR EQUILIBRATING ELLIPSE AND ELLIPSOIDS ==============================
 @jit(nopython=True)
 def get_root_ellipse(r0, z0, z1, g, maxiter=20):
     # use bisection method to find root ellipse
@@ -359,25 +436,6 @@ def test_place_back_to_ellipsoid(size=11, a=10, b=3, c=1, iterations=20):
     return
 
 
-class DistanceMatrix:
-    def __init__(self, points):
-        from scipy.spatial.distance import cdist
-        self.matrix = cdist(points, points, metric='sqeuclidean')  # squared euclidean because we compare distance
-        # remove the points correlating with themselves
-        self.upper = np.max(self.matrix)
-        self.matrix[self.matrix == 0] = self.upper
-
-    def update(self, points, new_point_index):
-        dist_update = np.sum((points - points[new_point_index]) ** 2, axis=1)  # squared euclidean (see above)
-        # remove point correlating with itself
-        dist_update[dist_update == 0] = self.upper
-        self.matrix[new_point_index, :] = dist_update
-        self.matrix[:, new_point_index] = dist_update
-
-    def shortest_distance(self):
-        return np.unravel_index(self.matrix.argmin(), self.matrix.shape)
-
-
 def equilibrate_ellipsoid(points, a=2, b=3, c=4, maxiter=10000, factor=0.01, display=False):
 
     dmatrix = DistanceMatrix(points)
@@ -412,28 +470,6 @@ def equilibrate_ellipsoid(points, a=2, b=3, c=4, maxiter=10000, factor=0.01, dis
             display_points_3d(points)
 
     return points
-
-
-def sample_points_ellipsoid(number, a=2, b=3, c=4, evenly=True, maxiter=10000, factor=0.01, display=False):
-    points = random_point_ellipsoid(a, b, c)
-    for i in range(number-1):
-        points = np.vstack((points, random_point_ellipsoid(a, b, c)))
-    if evenly:
-        return equilibrate_ellipsoid(points, a, b, c, maxiter=maxiter, factor=factor, display=display)
-    else:
-        return points
-
-
-def get_point_ellipse(a, b, theta):
-    rx = a * np.cos(theta)
-    ry = b * np.sin(theta)
-    return np.array([rx, ry])
-
-
-def random_point_ellipse(a, b):
-    u = np.random.rand()
-    theta = u * 2.0 * np.pi
-    return get_point_ellipse(a, b, theta)
 
 
 def place_back_to_ellipse(point, a, b):
@@ -490,6 +526,17 @@ def equilibrate_ellipse(points, a=2, b=3, maxiter=10000, factor=0.01, display=Fa
     return points
 
 
+# =================================== SAMPLE POINTS WITH NITER FOR EQUILBRATING ========================================
+def sample_points_ellipsoid(number, a=2, b=3, c=4, evenly=True, maxiter=10000, factor=0.01, display=False):
+    points = random_point_ellipsoid(a, b, c)
+    for i in range(number-1):
+        points = np.vstack((points, random_point_ellipsoid(a, b, c)))
+    if evenly:
+        return equilibrate_ellipsoid(points, a, b, c, maxiter=maxiter, factor=factor, display=display)
+    else:
+        return points
+
+
 def sample_points_ellipse(number, a=2, b=3, evenly=True, maxiter=1000, factor=0.01, display=False):
     points = random_point_ellipse(a, b)
     for i in range(number-1):
@@ -500,6 +547,7 @@ def sample_points_ellipse(number, a=2, b=3, evenly=True, maxiter=1000, factor=0.
         return points
 
 
+# ====================================== TRIANGULATE SURFACE OF POINT CLOUD ============================================
 def triangulate(points, alpha):
     import pyvista as pv
     # pyvista can also directly generate an ellipsoid
@@ -524,33 +572,7 @@ def triangulate(points, alpha):
     return shell
 
 
-def centroid(triangle):
-    # cetroid of the three 3D points a, b, and  c
-    # a,b, and c are numpy array of length 3
-    return (1 / 3) * (triangle[0] + triangle[1] + triangle[2])
-
-
-def rotate_point(point, rotation_matrix):
-    new_point = np.matmul(rotation_matrix, point.reshape(-1, 1))
-    return new_point.reshape(1, -1).squeeze()
-
-
-def rotate_triangle(triangle, matrix):
-    return np.vstack((rotate_point(triangle[i], matrix) for i in range(3)))
-
-
-def shift_point(point, shift):
-    return point + shift
-
-
-def shift_triangle(triangle, shift):
-    rtriangle = triangle
-    rtriangle[0] = shift_point(rtriangle[0], shift)
-    rtriangle[1] = shift_point(rtriangle[1], shift)
-    rtriangle[2] = shift_point(rtriangle[2], shift)
-    return rtriangle
-
-
+# ============================================ VISUALIZE TRIANGULATION =================================================
 def display_points_2d(points):
     import matplotlib
     matplotlib.use('Qt5Agg')
@@ -617,17 +639,32 @@ def display_triangle_normal(triangle, normal):
     return
 
 
-def boundary_box_from_pdb(filename):
-    try:
-        with open(filename, 'r') as pdb:
-            line = pdb.readline()
-            while line.split()[0] != 'CRYST1':
-                # note: if we do not encounter CRYST1 in the file, we go to the except statement.
-                line = pdb.readline()
-        return float(line.split()[1]), float(line.split()[2]), float(line.split()[3])
-    except Exception as e:
-        print(e)
-        raise Exception('Could not read pdb file.')
+# =============================================== TRIANGLE FUNCTIONS ===================================================
+def centroid(triangle):
+    # cetroid of the three 3D points a, b, and  c
+    # a,b, and c are numpy array of length 3
+    return (1 / 3) * (triangle[0] + triangle[1] + triangle[2])
+
+
+def rotate_point(point, rotation_matrix):
+    new_point = np.matmul(rotation_matrix, point.reshape(-1, 1))
+    return new_point.reshape(1, -1).squeeze()
+
+
+def rotate_triangle(triangle, matrix):
+    return np.vstack((rotate_point(triangle[i], matrix) for i in range(3)))
+
+
+def shift_point(point, shift):
+    return point + shift
+
+
+def shift_triangle(triangle, shift):
+    rtriangle = triangle
+    rtriangle[0] = shift_point(rtriangle[0], shift)
+    rtriangle[1] = shift_point(rtriangle[1], shift)
+    rtriangle[2] = shift_point(rtriangle[2], shift)
+    return rtriangle
 
 
 def sign(p1, p2, p3):
@@ -659,10 +696,6 @@ def point_in_triangle(pt, triangle):
     return not(has_neg and has_pos)
 
 
-def point_array_sign(point_array, p2, p3):
-    return (point_array[:, 0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (point_array[:, 1] - p3[1])
-
-
 def point_array_in_triangle(point_array, triangle):
 
     v1 = triangle[0]
@@ -680,138 +713,25 @@ def point_array_in_triangle(point_array, triangle):
     return np.invert(np.all([has_neg, has_pos], axis=0))
 
 
-def rotation_matrix_to_affine_matrix(rotation_matrix):
-    m = np.identity(4)
-    m[0:3, 0:3] = rotation_matrix
-    return m
+def point_array_sign(point_array, p2, p3):
+    return (point_array[:, 0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (point_array[:, 1] - p3[1])
 
 
-def membrane_potential_old(surface_mesh, voxel_size, membrane_pdb, solvent, voltage):
-    """
-
-    @param ellipsoid_mesh: this is a pyvista surface
-    @param voxel_size:
-    @param membrane_pdb:
-    @param solvent_potential:
-    @return:
-    """
-    #todo function is very slow
-
-    from potential import read_structure, iasa_integration
-
-    # READ THE STRUCTURE AND EXTEND IT ONLY ONCE
-    # membrane pdb should have solvent deleted at this point
-    x_coordinates, y_coordinates, z_coordinates, elements, b_factors, occupancies = read_structure(membrane_pdb)
-    z_coordinates = list(np.array(z_coordinates) - sum(z_coordinates) / len(z_coordinates))
-    # get the periodice boundary box from the pdb file
-    x_bound, y_bound, z_bound = boundary_box_from_pdb(membrane_pdb)
-
-    reference = Vector([.0, .0, 1.0])
-
-    membrane_x, membrane_y, membrane_z, membrane_e, membrane_b, membrane_o = [], [], [], [], [], []
-
-    atom_count = 0
-
-    for icell in range(surface_mesh.n_cells):
-        print(f'Triangle {icell+1} out of {surface_mesh.n_cells}.')
-
-        triangle = surface_mesh.extract_cells(icell).points
-        # print(triangle)
-        normal = Vector(surface_mesh.cell_normals[icell])
-
-        center = centroid(triangle)
-        triangle1 = shift_triangle(triangle, -center)
-
-        matrix1 = normal.get_rotation(reference)
-        triangle2 = rotate_triangle(triangle1, matrix1)
-
-        # add a random rotation of the triangle in the x-y plane to rotate the membrane's coordinates to other locations
-        angle = np.random.uniform(0,360)
-        matrix2 = z_axis_rotation_matrix(angle)
-        triangle3 = rotate_triangle(triangle2, matrix2)
-
-        # apply a shift to the points so that the coordinates are all above the origin
-        shift = np.array([np.min(triangle3[:, 0]), np.min(triangle3[:, 1]), 0])
-        triangle_sample = shift_triangle(triangle3, -shift)
-        # print(np.round(triangle_sample, decimals=2))
-
-        xmax = np.max(triangle_sample[:,0])
-        ymax = np.max(triangle_sample[:,1])
-
-        xext = int(np.ceil(xmax / x_bound))
-        yext = int(np.ceil(ymax / y_bound))
-        newx, newy, newz, newe, newb, newo = [], [], [], [], [], []
-        for i in range(xext):
-            for j in range(yext):
-                newx += list(np.array(x_coordinates) + i*x_bound)
-                newy += list(np.array(y_coordinates) + j*y_bound)
-                newz += z_coordinates
-                newe += elements
-                newb += b_factors
-                newo += occupancies
-        # at this points our triangle fits onto the structure
-        # now delete all the atoms that fall outside of the triangle
-        i = 0
-        while i < len(newx):
-            coordinate = np.array([newx[i], newy[i]])
-            if not point_in_triangle(coordinate, triangle_sample[:, :2]):
-                newx.pop(i)
-                newy.pop(i)
-                newz.pop(i)
-                newe.pop(i)
-                newb.pop(i)
-                newo.pop(i)
-            else:
-                i += 1
-        # now we have all the atoms needed to build the membrane model for the current triangle
-        # lets first rotate the atoms to the original orientation of the triangle
-
-        # applying the rotation to each atom individually might me a bit slow...
-        # n_atoms = len(newe)
-        # matrix1_t = matrix1.T
-        # matrix2_t = matrix2.T
-
-        atoms = np.array([newx, newy, newz])
-        atoms[0, :] += shift[0]
-        atoms[1, :] += shift[1]
-        atoms[2, :] += shift[2]
-        # inverse of rotation matrix for the rotating the points back to original triangle position
-        # inverse of atoms for correct order of applying rotation matrices
-        ratoms = (matrix1.T @ (matrix2.T @ atoms))
-        ratoms[0, :] += center[0]
-        ratoms[1, :] += center[1]
-        ratoms[2, :] += center[2]
-        # newx = list(ratoms[0, :])
-        # newy = list(ratoms[1, :])
-        # newz = list(ratoms[2, :])
-
-        # for i in range(n_atoms):
-        #     atom = np.array([newx[i], newy[i], newz[i]])
-        #     catom = rotate_point(shift_point(atom, shift), matrix2_t)
-        #     atom_surface = shift_point(rotate_point(catom, matrix1_t), center)
-        #     newx[i] = atom_surface[0]
-        #     newy[i] = atom_surface[1]
-        #     newz[i] = atom_surface[2]
-
-        # add positions to larger array that describes atom coordinates on the full surface
-        membrane_x += list(ratoms[0, :])
-        membrane_y += list(ratoms[1, :])
-        membrane_z += list(ratoms[2, :])
-        membrane_e += newe
-        membrane_b += newb
-        membrane_o += newo
-
-        atom_count += len(newe)
-        print(f'Number of atoms added {len(newe)} to a total count of {atom_count}.')
-
-    structure = (membrane_x, membrane_y, membrane_z, membrane_e, membrane_b, membrane_o)
-    # pass directly to iasa_integration
-    potential = iasa_integration('', voxel_size, solvent_exclusion='masking', V_sol=solvent,
-                                 absorption_contrast=True, voltage=voltage, density=physics.PROTEIN_DENSITY,
-                                 molecular_weight=physics.PROTEIN_MW, structure_tuple=structure)
-    return potential
+# ========================================== MEMBRANE PDB HELPER =======================================================
+def boundary_box_from_pdb(filename):
+    try:
+        with open(filename, 'r') as pdb:
+            line = pdb.readline()
+            while line.split()[0] != 'CRYST1':
+                # note: if we do not encounter CRYST1 in the file, we go to the except statement.
+                line = pdb.readline()
+        return float(line.split()[1]), float(line.split()[2]), float(line.split()[3])
+    except Exception as e:
+        print(e)
+        raise Exception('Could not read pdb file.')
 
 
+# =========================================== GENERATE VESICLE =========================================================
 def membrane_potential(surface_mesh, voxel_size, membrane_pdb, solvent, voltage, cores=1, gpu_id=None):
     """
 
@@ -822,8 +742,8 @@ def membrane_potential(surface_mesh, voxel_size, membrane_pdb, solvent, voltage,
     @return:
     """
 
-    from pytom.simulation.potential import read_structure, iasa_integration_parallel, iasa_integration_gpu
-    from pytom.voltools.utils import translation_matrix
+    from potential import read_structure, iasa_integration_parallel, iasa_integration_gpu
+    from voltools.utils import translation_matrix
     from threadpoolctl import threadpool_info, threadpool_limits
 
     # READ THE STRUCTURE AND EXTEND IT ONLY ONCE
@@ -832,9 +752,11 @@ def membrane_potential(surface_mesh, voxel_size, membrane_pdb, solvent, voltage,
         elements, b_factors, occupancies = map(np.array, read_structure(membrane_pdb))
     z_coordinates -= z_coordinates.mean()
     n_atoms_box = len(elements)
-    # get the periodice boundary box from the pdb file
+    # get the periodic boundary box from the pdb file
+    # ==> membrane model should have been equilibrated with periodic boundaries
     x_bound, y_bound, z_bound = boundary_box_from_pdb(membrane_pdb)
 
+    # assume reference rotation is upright along z-axis. Membrane lays in xy-plane.
     reference = Vector([.0, .0, 1.0])
 
     membrane_x, membrane_y, membrane_z, membrane_e, membrane_b, membrane_o = [], [], [], [], [], []
@@ -849,9 +771,7 @@ def membrane_potential(surface_mesh, voxel_size, membrane_pdb, solvent, voltage,
 
     for icell in range(surface_mesh.n_cells):
 
-
         triangle = surface_mesh.extract_cells(icell).points
-        # print(triangle)
         normal = Vector(surface_mesh.cell_normals[icell])
 
         center = centroid(triangle)
@@ -861,18 +781,17 @@ def membrane_potential(surface_mesh, voxel_size, membrane_pdb, solvent, voltage,
         triangle2 = rotate_triangle(triangle1, matrix1)
 
         # add a random rotation of the triangle in the x-y plane to rotate the membrane's coordinates to other locations
-        angle = np.random.uniform(0,360)
-        matrix2 = z_axis_rotation_matrix(angle)
-        triangle3 = rotate_triangle(triangle2, matrix2)
+        angle = np.random.uniform(0, 360)
+        matrix2 = z_axis_rotation_matrix(angle)  # TODO could use voltools for this?
+        triangle3 = rotate_triangle(triangle2, matrix2)  # TODO is a function for this needed?
 
         # apply a shift to the points so that the coordinates are all above the origin
         shift = np.array([np.min(triangle3[:, 0]), np.min(triangle3[:, 1]), 0])
         triangle_sample = shift_triangle(triangle3, -shift)
-        # print(np.round(triangle_sample, decimals=2))
 
+        # find xy limits of the triangle and find increase compared to lipid boundary box
         xmax = np.max(triangle_sample[:, 0])
         ymax = np.max(triangle_sample[:, 1])
-
         xext = int(np.ceil(xmax / x_bound))
         yext = int(np.ceil(ymax / y_bound))
 
@@ -881,6 +800,7 @@ def membrane_potential(surface_mesh, voxel_size, membrane_pdb, solvent, voltage,
         newe = np.zeros(xext * yext * n_atoms_box, dtype='<U1')
         newb, newo = (np.zeros(xext * yext * n_atoms_box),) * 2
 
+        # make periodic copies of membrane box in xy so the triangle fits
         for i in range(xext):
             for j in range(yext):
                 index = i * yext + j
@@ -892,45 +812,19 @@ def membrane_potential(surface_mesh, voxel_size, membrane_pdb, solvent, voltage,
                 newe[index * n_atoms_box: (index + 1) * n_atoms_box] = elements.copy()
                 newb[index * n_atoms_box: (index + 1) * n_atoms_box] = b_factors.copy()
                 newo[index * n_atoms_box: (index + 1) * n_atoms_box] = occupancies.copy()
-                # newx += list(np.array(x_coordinates) + i*x_bound)
-                # newy += list(np.array(y_coordinates) + j*y_bound)
-                # newz += z_coordinates
-                # newe += elements
-                # newb += b_factors
-                # newo += occupancies
 
+        # find all atoms that fall in the triangle
         locs = point_array_in_triangle(atoms[:, :2], triangle_sample[:, :2])
         atoms = atoms[locs]
         newe = newe[locs]
         newb = newb[locs]
         newo = newo[locs]
 
-        # at this points our triangle fits onto the structure
-        # now delete all the atoms that fall outside of the triangle
-        # i = 0
-        # while i < len(newx):
-        #     coordinate = np.array([newx[i], newy[i]])
-        #     if not point_in_triangle(coordinate, triangle_sample[:, :2]):
-        #         newx.pop(i)
-        #         newy.pop(i)
-        #         newz.pop(i)
-        #         newe.pop(i)
-        #         newb.pop(i)
-        #         newo.pop(i)
-        #     else:
-        #         i += 1
-        # now we have all the atoms needed to build the membrane model for the current triangle
-        # lets first rotate the atoms to the original orientation of the triangle
-
-        # applying the rotation to each atom individually might me a bit slow...
-        # n_atoms = len(newe)
-        # matrix1_t = matrix1.T
-        # matrix2_t = matrix2.T
+        # get affine matrices so we can combine the shifts
         matrix1 = rotation_matrix_to_affine_matrix(matrix1)
         matrix2 = rotation_matrix_to_affine_matrix(matrix2)
         t2 = translation_matrix(translation=-shift)  # voltools implements matrices as inverse operations, here we want
         t1 = translation_matrix(translation=-center)  # forward transformation
-        # TODO np.dot does the same as matmul in this situation but allows multithreading
         affine_matrix = np.matmul(np.matmul(t1, matrix1.T), np.matmul(matrix2.T, t2))  # transpose for the inverse
         # rotations
 
@@ -940,44 +834,21 @@ def membrane_potential(surface_mesh, voxel_size, membrane_pdb, solvent, voltage,
         else:
             ratoms = np.dot(atoms, affine_matrix.T)
 
-        # ratoms = np.matmul(affine_matrix, atoms)
-
-        # atoms[0, :] += shift[0]
-        # atoms[1, :] += shift[1]
-        # atoms[2, :] += shift[2]
-        # # inverse of rotation matrix for the rotating the points back to original triangle position
-        # inverse of atoms for correct order of applying rotation matrices
-        # np.matmul(matrix1.T, matrix2.T)
-        # ratoms = (matrix1.T @ (matrix2.T @ atoms))
-        # ratoms[0, :] += center[0]
-        # ratoms[1, :] += center[1]
-        # ratoms[2, :] += center[2]
-        # newx = list(ratoms[0, :])
-        # newy = list(ratoms[1, :])
-        # newz = list(ratoms[2, :])
-
-        # for i in range(n_atoms):
-        #     atom = np.array([newx[i], newy[i], newz[i]])
-        #     catom = rotate_point(shift_point(atom, shift), matrix2_t)
-        #     atom_surface = shift_point(rotate_point(catom, matrix1_t), center)
-        #     newx[i] = atom_surface[0]
-        #     newy[i] = atom_surface[1]
-        #     newz[i] = atom_surface[2]
-
         # TODO It might be much faster to write these coordinates to the end of a file. Because append will force new
         # TODO allocation of memory each time it is called.
-        # add positions to larger array that describes atom coordinates on the full surface
+        # add to the total atom lists
         membrane_x += list(ratoms[:, 0])
         membrane_y += list(ratoms[:, 1])
         membrane_z += list(ratoms[:, 2])
         membrane_e += list(newe)
         membrane_b += list(newb)
         membrane_o += list(newo)
+        atom_count += len(newe)  # count total atoms
 
-        atom_count += len(newe)
-
-        if icell % 1000 == 0: print(f'At triangle {icell+1} out of {surface_mesh.n_cells}. Current atom count is '
-                                    f'{atom_count}.')
+        # Track the progress
+        if icell % 1000 == 0:
+            print(f'At triangle {icell+1} out of {surface_mesh.n_cells}. Current atom count is '
+                  f'{atom_count}.')
 
     structure = (membrane_x, membrane_y, membrane_z, membrane_e, membrane_b, membrane_o)
     # pass directly to iasa_integration
@@ -1001,6 +872,7 @@ if __name__ == '__main__':
     import time
     import os
     import sys
+    # TODO update to argparse
     from pytom.tools.script_helper import ScriptHelper2, ScriptOption2
     from pytom.tools.parse_script_options import parse_script_options2
     from pytom.agnostic.io import write

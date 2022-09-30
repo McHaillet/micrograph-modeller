@@ -1717,9 +1717,9 @@ def combine_potential(potential1, potential2):
     return potential1_ext, potential2_ext, potential_combined
 
 
-def wrapper(filepath, output_folder, voxel_size, oversampling=1, binning=1, solvent_exclusion=None,
-            solvent_potential=physics.V_WATER, absorption_contrast=False, voltage=300E3, solvent_factor=1.0, cores=1,
-            gpu_id=None):
+def wrapper(filepath, output_folder, voxel_size, skip_structure_edit=False, oversampling=1, binning=1,
+            solvent_exclusion=None, solvent_potential=physics.V_WATER, absorption_contrast=False, voltage=300E3,
+            solvent_factor=1.0, cores=1, gpu_id=None):
     """
     Execution of generating an electrostatic potential (and absorption potential) from a pdb/cif file. Process
     includes preprocessing with chimera to add hydrogens and symmetry, then passing to IASA_intergration method to
@@ -1774,11 +1774,8 @@ def wrapper(filepath, output_folder, voxel_size, oversampling=1, binning=1, solv
     # except Exception as e:
     #     print(e)
 
-    # try:
-    #     filepath = prepare_pdb(filepath, output_folder)
-    # except Exception as e:
-    #     print(e)
-    #     pass
+    if not skip_structure_edit:
+        filepath = prepare_pdb(filepath, output_folder)
 
     assert filepath != 0, 'something went wrong with chimera'
 
@@ -1866,6 +1863,9 @@ if __name__ == '__main__':
                         help='File path with protein structure, either pdb or cif.')
     parser.add_argument('-d', '--destination', type=str, required=False, default='./',
                         help='Folder to store the files produced by potential.py. Default is current folder.')
+    parser.add_argument('--skip-edit', action='store_true', default=False, required=False,
+                        help='Whether to call schrodinger/pymol2 module for some structure modification: '
+                             'adding hydrogens, removing water molecules, and adding crystal symmetry.')
     parser.add_argument('-s', '--spacing', type=float, required=False, default=1.,
                         help='The size of the voxels of the output volume. 1A by default.')
     parser.add_argument('-n', '--oversampling', type=int, required=False, nargs='?', const=2, default=1,
@@ -1898,9 +1898,8 @@ if __name__ == '__main__':
         print('Destination for writing files does not exist, exiting...')
         sys.exit(0)
 
-    wrapper(args.file, args.destination, args.spacing, oversampling=args.oversampling, binning=args.binning,
-            solvent_exclusion=args.exclude_solvent, solvent_potential=args.solvent_potential,
+    wrapper(args.file, args.destination, args.spacing, skip_structure_edit=args.skip_edit, oversampling=args.oversampling,
+            binning=args.binning, solvent_exclusion=args.exclude_solvent, solvent_potential=args.solvent_potential,
             absorption_contrast=args.absorption_contrast, voltage=args.voltage * 1e3, cores=args.cores,
             gpu_id=args.gpu_id)
-
 

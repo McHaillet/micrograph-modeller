@@ -3,9 +3,6 @@ channels:
   - defaults
 dependencies:
   - python=3.8
-  - cudatoolkit=11.6
-  - cudnn
-  - cupy
   - matplotlib
   - ipython
   - numpy
@@ -22,3 +19,4 @@ dependencies:
   # pymol-bundle contains apbs and pdb2pqr; also pymol can be used to add hydrogens
   - pip:
     - voltools
+    - cupy-cuda116

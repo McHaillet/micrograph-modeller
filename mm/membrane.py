@@ -7,8 +7,16 @@ Author: Marten Chaillet
 """
 
 # essential
+import time
+import os
+import sys
+import argparse
 import numpy as np
+import pyvista as pv
 import physics
+import mrcfile
+import support
+from scipy.spatial import distance
 from numba import jit
 
 
@@ -182,16 +190,6 @@ def rotation_matrix_to_affine_matrix(rotation_matrix):
     return m
 
 
-# ======================================= DISTANCE BETWEEN TWO POINTS ==================================================
-def distance_nonsqrt(p1, p2):
-    return sum((p1 - p2) ** 2)
-
-
-def distance(p1, p2):
-    dd = (p1 - p2)**2
-    return np.sqrt(sum(dd))
-
-
 # ======================================== SAMPLING POINTS ON ELLIPSE AND ELLIPSOID ====================================
 def get_point_ellipsoid(a, b, c, theta, phi):
     sinTheta = np.sin(theta)
@@ -234,8 +232,8 @@ def random_point_ellipse(a, b):
 # ================================ DISTANCE MATRIX WRAPPER FOR ELLIPSE POINT ===========================================
 class DistanceMatrix:
     def __init__(self, points):
-        from scipy.spatial.distance import cdist
-        self.matrix = cdist(points, points, metric='sqeuclidean')  # squared euclidean because we compare distance
+        self.matrix = distance.cdist(points, points, metric='sqeuclidean')  # squared euclidean because we compare
+        # distance
         # remove the points correlating with themselves
         self.upper = np.max(self.matrix)
         self.matrix[self.matrix == 0] = self.upper
@@ -299,17 +297,6 @@ def distance_point_ellipse_quadrant(e0, e1, y0, y1, maxiter=20, epsilon=0):
     """
     from https://www.geometrictools.com/Documentation/DistancePointEllipseEllipsoid.pdf
     e0 >= e1 > 0, y0 >= 0, y1 >= 0  (Y is in the first quadrant)
-
-    :param e0:
-    :type e0:
-    :param e1:
-    :type e1:
-    :param y0:
-    :type y0:
-    :param y1:
-    :type y1:
-    :return:
-    :rtype:
     """
     if y1 > epsilon:
         if y0 > epsilon:
@@ -340,21 +327,6 @@ def distance_point_ellipsoid_octant(e0, e1, e2, y0, y1, y2, maxiter=20, epsilon=
     """
     from https://www.geometrictools.com/Documentation/DistancePointEllipseEllipsoid.pdf
     e0 >= e1 >= e2 > 0, y0 >= 0, y1 >= 0, y2 >= 0  (Y is in the first octant)
-
-    :param e0:
-    :type e0:
-    :param e1:
-    :type e1:
-    :param e2:
-    :type e2:
-    :param y0:
-    :type y0:
-    :param y1:
-    :type y1:
-    :param y2:
-    :type y2:
-    :return:
-    :rtype:
     """
     if y2 > epsilon:
         if y1 > epsilon:
@@ -423,7 +395,7 @@ def test_place_back_to_ellipsoid(size=11, a=10, b=3, c=1, iterations=20):
             for k, z in enumerate(np.linspace(-c, c, zz)):
                 point = np.array([x, y, z])
                 ellipsoid_point = place_back_to_ellipsoid(point, a, b, c, maxiter=iterations)
-                distances[i,j,k] = distance(point, ellipsoid_point)
+                distances[i,j,k] = np.sqrt(distance.sqeuclidean(point, ellipsoid_point))
     # visualize
     slice_x = distances[xx//2,:,:]
     slice_y = distances[:,yy//2,:]
@@ -495,12 +467,12 @@ def place_back_to_ellipse(point, a, b):
 def equilibrate_ellipse(points, a=2, b=3, maxiter=10000, factor=0.01, display=False):
     for x in range(maxiter):
         minp1, minp2 = 0, 1
-        mind = distance_nonsqrt(points[minp1], points[minp2])
+        mind = distance.sqeuclidean(points[minp1], points[minp2])
         maxd = mind
         # find closest two points
         for i in range(points.shape[0]-1):
             for j in range(i+1, points.shape[0]):
-                d = distance_nonsqrt(points[i], points[j])
+                d = distance.sqeuclidean(points[i], points[j])
                 if d < mind:
                     minp1, minp2 = i, j
                     mind = d
@@ -549,7 +521,6 @@ def sample_points_ellipse(number, a=2, b=3, evenly=True, maxiter=1000, factor=0.
 
 # ====================================== TRIANGULATE SURFACE OF POINT CLOUD ============================================
 def triangulate(points, alpha):
-    import pyvista as pv
     # pyvista can also directly generate an ellipsoid
     # ellipsoid = pv.ParametricEllipsoid(10, 5, 5)
     # this returns a surface as pyvista.PolyData
@@ -637,6 +608,39 @@ def display_triangle_normal(triangle, normal):
     ax.set_ylim3d(-.5, .5)
     ax.set_zlim3d(-.5, .5)
     return
+
+
+class Vesicle:
+    def __init__(self, radius, voxel_spacing):
+        self.radius = radius
+        self.voxel_spacing = voxel_spacing
+        self.framework = None
+        self.occupation = None  # bool list of length n_triangles; true if membrane protein is placed
+
+    def generate_framework(self, equilibrate=True, equilibrator_iterations=10000):
+        # sample points
+        self.framework = sample_points_ellipsoid()
+
+    def deform_framework(self, n=1, strength=1):
+        for i in range(n):
+            deformation = (1,1,1)
+            self._deform(location=deformation, strength=strength)
+
+    def _deform(self):
+        # do deformation
+        pass
+
+    def sample_membrane(self, bilayer_pdb):
+
+        pass
+
+    def sample_protein(self, membrane_protein_pdb, n=1):
+        for i in range(n):
+            triangle = np.random.uniform(0, len(self.framework))
+            while self.occupation[triangle]:
+                triangle = np.random.uniform(0, len(self.framework))
+            # place_protein()
+            self.occupation[triangle] = True
 
 
 # =============================================== TRIANGLE FUNCTIONS ===================================================
@@ -732,7 +736,8 @@ def boundary_box_from_pdb(filename):
 
 
 # =========================================== GENERATE VESICLE =========================================================
-def membrane_potential(surface_mesh, voxel_size, membrane_pdb, solvent, voltage, cores=1, gpu_id=None):
+def membrane_potential(surface_mesh, voxel_size, membrane_pdb, solvent_exclusion, solvent_potential, voltage,
+                       cores=1, gpu_id=None):
     """
 
     @param ellipsoid_mesh: this is a pyvista surface
@@ -853,81 +858,96 @@ def membrane_potential(surface_mesh, voxel_size, membrane_pdb, solvent, voltage,
     structure = (membrane_x, membrane_y, membrane_z, membrane_e, membrane_b, membrane_o)
     # pass directly to iasa_integration
     if gpu_id is not None:
-        potential = iasa_integration_gpu('', voxel_size, solvent_exclusion='masking', V_sol=solvent,
-                                              absorption_contrast=True, voltage=voltage,
-                                              density=physics.PROTEIN_DENSITY,
-                                              molecular_weight=physics.PROTEIN_MW, structure_tuple=structure,
-                                              gpu_id=gpu_id)
+        potential = iasa_integration_gpu('', voxel_size, solvent_exclusion=solvent_exclusion, V_sol=solvent_potential,
+                                         absorption_contrast=True, voltage=voltage, density=physics.PROTEIN_DENSITY,
+                                         molecular_weight=physics.PROTEIN_MW, structure_tuple=structure, gpu_id=gpu_id)
     else:
-        potential = iasa_integration_parallel('', voxel_size, solvent_exclusion='masking', V_sol=solvent,
-                                     absorption_contrast=True, voltage=voltage, density=physics.PROTEIN_DENSITY,
-                                     molecular_weight=physics.PROTEIN_MW, structure_tuple=structure, cores=cores)
+        potential = iasa_integration_parallel('', voxel_size, solvent_exclusion=solvent_exclusion,
+                                              V_sol=solvent_potential, absorption_contrast=True, voltage=voltage,
+                                              density=physics.PROTEIN_DENSITY, molecular_weight=physics.PROTEIN_MW,
+                                              structure_tuple=structure, cores=cores)
 
     return potential
 
 
 if __name__ == '__main__':
     # more lipid bilayer boxes: https://people.ucalgary.ca/~tieleman/download.html
-
-    import time
-    import os
-    import sys
-    # TODO update to argparse
-    from pytom.tools.script_helper import ScriptHelper2, ScriptOption2
-    from pytom.tools.parse_script_options import parse_script_options2
-    from pytom.agnostic.io import write
-    from pytom.simulation.support import reduce_resolution_fourier
-    from pytom.agnostic.transform import resize
-
     start = time.time()
 
-    # syntax is ScriptOption([short, long], description, requires argument, is optional)
-    helper = ScriptHelper2(
-        sys.argv[0].split('/')[-1],  # script name
-        description='Generate a membrane structure for simulation',
-        authors='Marten Chaillet',
-        options = [ScriptOption2(['-r', '--radius_factor'], '1 corresponds to a vesicle which has an average diameter '
-                                                          'of 45 nm across.', 'float', 'optional', 1.),
-                   ScriptOption2(['-s', '--spacing'], 'Voxel spacing.', 'float', 'optional', 5),
-                   ScriptOption2(['-d', '--destination'], 'Folder where output should be stored.', 'directory',
-                                 'required'),
-                   ScriptOption2(['-m', '--membrane_pdb'], 'Membrane file, default '
-                                                           '/path/to/pdb/lipid/dppc128_dehydrated.pdb',
-                                 'file', 'required'),
-                   ScriptOption2(['-x', '--solvent'], 'Solvent background potential', 'float', 'optional',
-                                 physics.V_WATER),
-                   ScriptOption2(['-v', '--voltage'], 'Voltage for absorption contrast ', 'float', 'optional', 300),
-                   ScriptOption2(['-c', '--cores'], 'Number of cores to use for numpy dot operations and later iasa '
-                                                    'integration.', 'int', 'optional', 1),
-                   ScriptOption2(['-g', '--gpuID'], 'GPU id to execute on', 'int', 'optional')])
+    parser = argparse.ArgumentParser(description='Generate a vesicle. Script will create a triangular mesh framework '
+                                                 'on a random ellipsoidal shape of average radius (-r). Lipids will '
+                                                 'be sampled from a MD-equilibrated lipid bilayer pdb structure with '
+                                                 'periodic boundaries. -- Marten Chaillet (@McHaillet)')
+    parser.add_argument('-r', '--radius', type=float, required=True,
+                        help='1 corresponds to a vesicle which has an average diameter of 45 nm across.')
+    parser.add_argument('-s', '--spacing', type=float, required=False, default=1,
+                        help='Voxel spacing.')
+    parser.add_argument('-d', '--destination', type=str, required=False, default='./',
+                        help='Folder to write output to, default is current folder.')
+    parser.add_argument('-m', '--membrane-pdb', type=str, required=True,
+                        help='Membrane model file (make sure waters are removed), default can be found in: '
+                             'micrograph-modeller/mm/membrane_models/dppc128_dehydrated.pdb. Look here for more '
+                             'examples: https://people.ucalgary.ca/~tieleman/download.html.')
+    parser.add_argument('-x', '--exclude-solvent', type=str, required=False, choices=['gaussian', 'masking'],
+                        help='Whether to exclude solvent around each atom as a correction of the potential, '
+                             'either "gaussian" or "masking".')
+    parser.add_argument('-p', '--solvent-potential', type=float, required=False, default=physics.V_WATER,
+                        help=f'Value for the solvent potential. By default amorphous ice, {physics.V_WATER} V.')
+    parser.add_argument('-v', '--voltage', type=float, required=False, default=300,
+                        help='Value for the electron acceleration voltage. Needed for calculating the inelastic mean '
+                             'free path in case of absorption contrast calculation. By default 300 (keV).')
+    parser.add_argument('-c', '--cores', type=int, required=False, default=1,
+                        help='Number of cpu cores to use for the calculation.')
+    parser.add_argument('-g', '--gpu-id', type=int, required=False,
+                        help='GPU index to run the program on.')
 
-    options = parse_script_options2(sys.argv[1:], helper)
-    size_factor, voxel, folder, input_membrane, solvent, voltage, cores, gpuID = options
-    voltage *= 1E3
+    args = parser.parse_args()
+    # check if io locations are valid
+    if not os.path.exists(args.membrane_pdb):
+        print('Input file does not exist, exiting...')
+        sys.exit(0)
+    if not os.path.exists(args.destination):
+        print('Destination for writing files does not exist, exiting...')
+        sys.exit(0)
 
+    size_factor = args.radius  # default = 45 ??
+
+    # TODO set proper calculateion for vesicles size ==========================
     # automatically scale these points
     N = int(100 * size_factor**2.2)  # number of points
     a, b, c = sorted((x*size_factor for x in (np.random.randint(180, 280), np.random.randint(180, 280),
                                        np.random.randint(180, 280))), reverse=True)
     alpha = 2000 * size_factor
-    voxel = 5
+    voxel = 5  # TODO args.spacing overwritten
+    # TODO ====================================================================
 
     # generate an ellipsoid and triangulate it
-    print('Ellipsoid parameters: ' , a, b, c)
+    print('Ellipsoid parameters: ', a, b, c)
     points = sample_points_ellipsoid(N, a=a, b=b, c=c, evenly=True, maxiter=50000, factor=0.1)
     surface = triangulate(points, alpha)
 
     # fill the triangles with lipid molecules and calculate potential for it
-    volume = membrane_potential(surface, voxel, input_membrane, solvent, voltage, cores=cores, gpu_id=gpuID)
+    volume = membrane_potential(surface, voxel, args.membrane_pdb, args.exclude_solvent, args.solvent_potential,
+                                args.voltage * 1e3, cores=args.cores, gpu_id=args.gpu_id)
 
     name = 'bilayer'
     size = f'{a*2/10:.0f}x{b*2/10:.0f}x{c*2/10:.0f}nm'  # double the values of the ellipsoid radii for actual size
 
-    real_fil = reduce_resolution_fourier(volume.real, voxel, 2 * voxel)
-    imag_fil = reduce_resolution_fourier(volume.imag, voxel, 2 * voxel)
+    # filter and write
+    real_fil = support.reduce_resolution_fourier(volume.real, voxel, 2 * voxel).get()
+    imag_fil = support.reduce_resolution_fourier(volume.imag, voxel, 2 * voxel).get()
 
-    write(os.path.join(folder, f'{name}_{size}_{voxel:.2f}A_solvent-4.530V_real.mrc'), real_fil)
-    write(os.path.join(folder, f'{name}_{size}_{voxel:.2f}A_solvent-4.530V_imag_300V.mrc'), imag_fil)
+    with mrcfile.new(os.path.join(args.destination,
+                                  f'{name}_{size}_{voxel:.2f}A_solvent-4.530V_real.mrc'),
+                     overwrite=True) as mrc:
+        mrc.set_data(real_fil)
+        mrc.voxel_size = voxel
+
+    with mrcfile.new(os.path.join(args.destination,
+                                  f'{name}_{size}_{voxel:.2f}A_solvent-4.530V_imag_300V.mrc'),
+                     overwrite=True) as mrc:
+        mrc.set_data(imag_fil)
+        mrc.voxel_size = voxel
 
     # binning = 2
     #

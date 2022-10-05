@@ -20,6 +20,50 @@ from scipy.spatial import distance
 from numba import jit
 
 
+# =============================================== visuals ==============================================================
+def display_points_2d(points):
+    import matplotlib
+    matplotlib.use('Qt5Agg')
+    import matplotlib.pyplot as plt
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.scatter(points[:, 0], points[:, 1])
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    plt.show()
+    return
+
+
+def display_vectors(v1, v2):
+    import matplotlib
+    matplotlib.use('Qt5Agg')
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D  # <--- This is important for 3d plotting
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    ax.plot([0, v1[0]], [0, v1[1]], [0, v1[2]], color='blue')
+    ax.plot([0, v2[0]], [0, v2[1]], [0, v2[2]], color='red')
+    ax.set_xlim3d(-1, 1)
+    ax.set_ylim3d(-1, 1)
+    ax.set_zlim3d(-1, 1)
+    #     fig.show()
+    return
+
+
+# ========================================== MEMBRANE PDB HELPER =======================================================
+def boundary_box_from_pdb(filename):
+    try:
+        with open(filename, 'r') as pdb:
+            line = pdb.readline()
+            while line.split()[0] != 'CRYST1':
+                # note: if we do not encounter CRYST1 in the file, we go to the except statement.
+                line = pdb.readline()
+        return float(line.split()[1]), float(line.split()[2]), float(line.split()[3])
+    except Exception as e:
+        print(e)
+        raise Exception('Could not read pdb file.')
+
+
 # ========================================= VECTOR CLASS AND Z ROT MATRIX ==============================================
 class Vector:
     # Class can be used as both a 3d coordinate, and a vector
@@ -227,26 +271,6 @@ def random_point_ellipse(a, b):
     u = np.random.rand()
     theta = u * 2.0 * np.pi
     return get_point_ellipse(a, b, theta)
-
-
-# ================================ DISTANCE MATRIX WRAPPER FOR ELLIPSE POINT ===========================================
-class DistanceMatrix:
-    def __init__(self, points):
-        self.matrix = distance.cdist(points, points, metric='sqeuclidean')  # squared euclidean because we compare
-        # distance
-        # remove the points correlating with themselves
-        self.upper = np.max(self.matrix)
-        self.matrix[self.matrix == 0] = self.upper
-
-    def update(self, points, new_point_index):
-        dist_update = np.sum((points - points[new_point_index]) ** 2, axis=1)  # squared euclidean (see above)
-        # remove point correlating with itself
-        dist_update[dist_update == 0] = self.upper
-        self.matrix[new_point_index, :] = dist_update
-        self.matrix[:, new_point_index] = dist_update
-
-    def shortest_distance(self):
-        return np.unravel_index(self.matrix.argmin(), self.matrix.shape)
 
 
 # ============================= HELPER FUNCTIONS FOR EQUILIBRATING ELLIPSE AND ELLIPSOIDS ==============================
@@ -543,20 +567,7 @@ def triangulate(points, alpha):
     return shell
 
 
-# ============================================ VISUALIZE TRIANGULATION =================================================
-def display_points_2d(points):
-    import matplotlib
-    matplotlib.use('Qt5Agg')
-    import matplotlib.pyplot as plt
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-    ax.scatter(points[:, 0], points[:, 1])
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-    plt.show()
-    return
-
-
+# ============================================ TRIANGULATION ===========================================================
 def display_points_3d(points, zlim=0):
     import matplotlib
     matplotlib.use('Qt5Agg')
@@ -572,22 +583,6 @@ def display_points_3d(points, zlim=0):
     ax.set_ylabel('y')
     ax.set_zlabel('z')
     plt.show()
-    return
-
-
-def display_vectors(v1, v2):
-    import matplotlib
-    matplotlib.use('Qt5Agg')
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D  # <--- This is important for 3d plotting
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    ax.plot([0, v1[0]], [0, v1[1]], [0, v1[2]], color='blue')
-    ax.plot([0, v2[0]], [0, v2[1]], [0, v2[2]], color='red')
-    ax.set_xlim3d(-1, 1)
-    ax.set_ylim3d(-1, 1)
-    ax.set_zlim3d(-1, 1)
-    #     fig.show()
     return
 
 
@@ -610,40 +605,20 @@ def display_triangle_normal(triangle, normal):
     return
 
 
-class Vesicle:
-    def __init__(self, radius, voxel_spacing):
-        self.radius = radius
-        self.voxel_spacing = voxel_spacing
-        self.framework = None
-        self.occupation = None  # bool list of length n_triangles; true if membrane protein is placed
-
-    def generate_framework(self, equilibrate=True, equilibrator_iterations=10000):
-        # sample points
-        self.framework = sample_points_ellipsoid()
-
-    def deform_framework(self, n=1, strength=1):
-        for i in range(n):
-            deformation = (1,1,1)
-            self._deform(location=deformation, strength=strength)
-
-    def _deform(self):
-        # do deformation
-        pass
-
-    def sample_membrane(self, bilayer_pdb):
-
-        pass
-
-    def sample_protein(self, membrane_protein_pdb, n=1):
-        for i in range(n):
-            triangle = np.random.uniform(0, len(self.framework))
-            while self.occupation[triangle]:
-                triangle = np.random.uniform(0, len(self.framework))
-            # place_protein()
-            self.occupation[triangle] = True
+def sign(p1, p2, p3):
+    """
+    Determine on which side of the line formed by p2 and p3, p1 lays.
+    """
+    return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
 
 
-# =============================================== TRIANGLE FUNCTIONS ===================================================
+def point_array_sign(point_array, p2, p3):
+    """
+    Determine on which side of the line formed by p2 and p3, the points in point array lay.
+    """
+    return (point_array[:, 0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (point_array[:, 1] - p3[1])
+
+
 def centroid(triangle):
     # cetroid of the three 3D points a, b, and  c
     # a,b, and c are numpy array of length 3
@@ -669,13 +644,6 @@ def shift_triangle(triangle, shift):
     rtriangle[1] = shift_point(rtriangle[1], shift)
     rtriangle[2] = shift_point(rtriangle[2], shift)
     return rtriangle
-
-
-def sign(p1, p2, p3):
-    """
-    Determine on which side of the line formed by p2 and p3, p1 lays.
-    """
-    return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
 
 
 def point_in_triangle(pt, triangle):
@@ -717,22 +685,208 @@ def point_array_in_triangle(point_array, triangle):
     return np.invert(np.all([has_neg, has_pos], axis=0))
 
 
-def point_array_sign(point_array, p2, p3):
-    return (point_array[:, 0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (point_array[:, 1] - p3[1])
+class Triangle:
+    def __init__(self, points, normal):
+        assert (type(points[0]) is np.ndarray) and (len(points[0]) == 3), 'invalid triangle points provided'
+        self.p1, self.p2, self.p3 = np.append(points[0], 1.), np.append(points[1], 1.), np.append(points[2], 1.)
+        self.centroid = (1 / 3) * (points[0] + points[1] + points[2])
+        self.normal = Vector(normal)
+
+    def update_centroid(self):
+        self.centroid = (1 / 3) * (self.p1[:3] + self.p2[:3] + self.p3[:3])
+
+    def get_transformed_triangle(self, matrix):
+        new_points = [np.dot(self.p1, matrix), np.dot(self.p2, matrix), np.dot(self.p3, matrix)]
+        new_normal = Vector(np.dot(self.normal.get(), matrix[:3, :3]))
+        return Triangle(new_points, new_normal)
+
+    def get_shifted_points(self, shift):
+        return np.vstack([self.p1[:3] + shift, self.p2[:3] + shift, self.p3[:3] + shift])
+
+    def get_points(self):
+        return np.vstack([self.p1[:3], self.p2[:3], self.p3[:3]])
+
+    def get_min(self):
+        return np.array([min([p[i] for p in (self.p1, self.p2, self.p3)]) for i in [0, 1, 2]])
+
+    def get_max(self):
+        return np.array([max([p[i] for p in (self.p1, self.p2, self.p3)]) for i in [0, 1, 2]])
+
+    def point_in_triangle(self, pt):
+        """
+        Return true if point lies inside triangle on the xy plane.
+        """
+        v1, v2, v3 = self.p1[:3], self.p2[:3], self.p3[:3]
+
+        d1 = sign(pt, v1, v2)
+        d2 = sign(pt, v2, v3)
+        d3 = sign(pt, v3, v1)
+
+        has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+        has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+
+        return not (has_neg and has_pos)
+
+    def point_array_in_triangle(self, point_array):
+        """
+        Return bool array with true if point lies inside triangle on the xy plane.
+        """
+        v1, v2, v3 = self.p1[:3], self.p2[:3], self.p3[:3]
+
+        d1 = point_array_sign(point_array, v1, v2)
+        d2 = point_array_sign(point_array, v2, v3)
+        d3 = point_array_sign(point_array, v3, v1)
+
+        # for numpy arrays
+        has_neg = np.any([d1 < 0, d2 < 0, d3 < 0], axis=0)
+        has_pos = np.any([d1 > 0, d2 > 0, d3 > 0], axis=0)
+
+        return np.invert(np.all([has_neg, has_pos], axis=0))
+
+    def display_triangle(self):
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d import Axes3D  # <--- This is important for 3d plotting
+
+        # first center triangle around origin
+        centered_triangle = self.get_shifted_points(-self.centroid)
+        normal = self.normal.get()
+
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        ax.scatter(centered_triangle[:, 0], centered_triangle[:, 1], centered_triangle[:, 2])
+        ax.plot([0, normal[0]], [0, normal[1]], [0, normal[2]], color='blue')
+        ax.set_xlim3d(-.5, .5)
+        ax.set_ylim3d(-.5, .5)
+        ax.set_zlim3d(-.5, .5)
 
 
-# ========================================== MEMBRANE PDB HELPER =======================================================
-def boundary_box_from_pdb(filename):
-    try:
-        with open(filename, 'r') as pdb:
-            line = pdb.readline()
-            while line.split()[0] != 'CRYST1':
-                # note: if we do not encounter CRYST1 in the file, we go to the except statement.
-                line = pdb.readline()
-        return float(line.split()[1]), float(line.split()[2]), float(line.split()[3])
-    except Exception as e:
-        print(e)
-        raise Exception('Could not read pdb file.')
+class DistanceMatrix:
+    """
+    Distance matrix wrapper for moving points and updating matrix with new points.
+    """
+    def __init__(self, points):
+        self.matrix = distance.cdist(points, points, metric='sqeuclidean')
+        # squared euclidean because we compare distance, saves computation time
+        self.mean_distance = np.sqrt(self.matrix[self.matrix != 0].mean())
+        self.upper = np.max(self.matrix)
+        self.matrix[self.matrix == 0] = self.upper  # remove diagonal as its always 0
+
+    def update(self, points, new_point_index):
+        dist_update = np.sum((points - points[new_point_index]) ** 2, axis=1)  # squared euclidean (see above)
+        dist_update[dist_update == 0] = self.upper  # remove point correlating with itself
+        self.matrix[new_point_index, :] = dist_update  # update matrix
+        self.matrix[:, new_point_index] = dist_update
+
+    def shortest_distance(self):
+        return np.unravel_index(self.matrix.argmin(), self.matrix.shape)
+
+
+class Vesicle:
+    def __init__(self, radius, voxel_spacing):
+        self.radius = radius
+        self.radii = sorted((x * self.radius for x in (np.random.uniform(0.7, 1.3), np.random.uniform(0.7, 1.3),
+                                                       np.random.uniform(0.7, 1.3))), reverse=True)
+        self.voxel_spacing = voxel_spacing
+        self.reference_normal = Vector([.0, .0, 1.])  # dont see the point of making this an init param
+        self.point_cloud = None
+        self.framework = None  # list of triangles?
+        self.occupation = None  # bool list of length n_triangles; true if membrane protein is placed
+
+    def sample_ellipsoid_point_cloud(self, n):
+        points = []
+        for i in range(n):
+            points.append(random_point_ellipsoid(*self.radii))
+        self.point_cloud = np.vstack(points)
+
+    def equilibrate_point_cloud(self, a=2, b=3, c=4, maxiter=10000, factor=0.01, display=False):
+        dmatrix = DistanceMatrix(self.point_cloud)
+        mean_dist = dmatrix.mean_distance
+
+        for x in range(maxiter):
+            if x % 1000 == 0:  # print progress
+                print(f'equilibrator iteration {x}')
+
+                if display:
+                    self.display_point_cloud()
+
+            # get the indices of the points that form the closest pair
+            minp1, minp2 = dmatrix.shortest_distance()
+            p1, p2 = self.point_cloud[minp1], self.point_cloud[minp2]
+
+            # move closest pair away from each other
+            scale = factor * (mean_dist / distance.euclidean(p1, p2))  # make scaling larger for tiny distances
+            p1_new = p1 + scale * (p1 - p2)  # move p1 away from p2
+            p2_new = p2 + scale * (p2 - p1)  # move p2 away from p1
+
+            # use newton optimization to place the points back on the ellipsoid
+            self.point_cloud[minp1] = place_back_to_ellipsoid(p1_new, *self.radii)
+            self.point_cloud[minp2] = place_back_to_ellipsoid(p2_new, *self.radii)
+
+            # update distance matrix with the new points
+            dmatrix.update(self.point_cloud, minp1)
+            dmatrix.update(self.point_cloud, minp2)
+
+    def generate_framework(self, alpha):
+        """
+        Pyvista can also directly generate an ellipsoid with:
+            ellipsoid = pv.ParametricEllipsoid(10, 5, 5)
+        This returns a surface as pyvista.PolyData and delaunay 3d should work directly on this
+        """
+        # points is a 3D numpy array (n_points, 3) coordinates of a sphere
+        cloud = pv.PolyData(self.point_cloud)  # built-in pyvista plot: cloud.plot()
+
+        # reconstructs the surface from a set of points on an assumed solid surface
+        # for noise search for "pyvista perlin noise 3d"
+        volume = cloud.delaunay_3d(alpha=alpha, progress_bar=True)
+        shell = volume.extract_geometry()  # built-in pyvista plot: shell.plot()
+
+        self.framework = []
+        for i in range(shell.n_cells):  # make each surface cell a triangle in the framework
+            self.framework.append(Triangle(shell.extract_cells(i).points, shell.cell_normals[i]))
+
+    def deform_framework(self, n=1, strength=1):
+        """
+        n is the number of deformation and strenght is how strong they should be.
+        """
+        pass
+
+    def _deform(self, deformation):
+        # do a deformation
+        pass
+
+    def sample_membrane(self, bilayer_pdb):
+        # TODO copy the membrane sampling code to here
+        pass
+
+    def sample_protein(self, membrane_protein_pdb, n=1):
+        """
+        Sample n copies of the protein on the surface.
+
+        Example code for placing only 1 protein in each triangle of the framework.
+        for i in range(n):
+            triangle = np.random.uniform(0, len(self.framework))
+            while self.occupation[triangle]:
+                triangle = np.random.uniform(0, len(self.framework))
+            # place_protein()
+            self.occupation[triangle] = True
+        """
+        pass
+
+    def display_point_cloud(self, zlim=None):
+        assert self.point_cloud is not None, 'point cloud not yet initialized, cannot display'
+
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d import Axes3D  # <--- This is important for 3d plotting
+
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        ax.scatter(points[:, 0], points[:, 1], points[:, 2])
+        if zlim is not None:
+            ax.set_zlim3d(-zlim, zlim)
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        ax.set_zlabel('z')
+        plt.show()
 
 
 # =========================================== GENERATE VESICLE =========================================================
@@ -784,6 +938,7 @@ def membrane_potential(surface_mesh, voxel_size, membrane_pdb, solvent_exclusion
 
         matrix1 = normal.get_rotation(reference)
         triangle2 = rotate_triangle(triangle1, matrix1)
+        # reference.get_rotation(normal)  => then rotate with post mult
 
         # add a random rotation of the triangle in the x-y plane to rotate the membrane's coordinates to other locations
         angle = np.random.uniform(0, 360)

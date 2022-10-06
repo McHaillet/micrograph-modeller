@@ -996,6 +996,11 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
     @param structure_tuple: structure information as a tuple (x_coordinates, y_coordinates, z_coordinates, elements,
     b_factors, occupancies), if provided this overrides file reading
     @type  structure_tuple: L{tuple} - (L{list},) * 6 with types (float, float, float, str, float, float)
+    @param split_by: int factor (>= 1) to split dimensions by for calculation, 2 means each dimensions is plit by 2
+    resulting in 8 sub boxes for the calculation
+    @param split_by: L{int}
+    @param gpu_id: index of gpu to run on, start from 0
+    @param gpu_id: L{int}
 
     @return: A volume with interaction potentials, either tuple of (real, imag) or single real, both real and imag
     are 3d arrays.
@@ -1005,7 +1010,6 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
     """
     import cupy as cp
     import cupyx.scipy.ndimage as ndimage
-    import voltools as vt
 
     # if (absorption_contrast) or (solvent_exclusion in ['gaussian', 'masking']) or (oversampling != 1):
     #     print('abs contrast, gaussian/masking solvent_exclusion, and oversampling still need to be implement for gpu')
@@ -1046,7 +1050,7 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
     # find dimensions
     n_atoms = len(x_coordinates)
     min_x, max_x, min_y, max_y, min_z, max_z = min(x_coordinates), max(x_coordinates), min(y_coordinates), \
-                                        max(y_coordinates), min(z_coordinates), max(z_coordinates)
+                                               max(y_coordinates), min(z_coordinates), max(z_coordinates)
     x_size = max_x - min_x
     y_size = max_y - min_y
     z_size = max_z - min_z
@@ -1186,6 +1190,11 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
             real = ndimage.zoom(support.reduce_resolution_fourier(real, voxel_size, voxel_size * 2 * oversampling),
                                 1 / oversampling, order=3)
         return real
+
+
+def iasa_integration_gpu_split(filepath, voxel_size=1., oversampling=1, solvent_exclusion=None,
+                     V_sol=physics.V_WATER, absorption_contrast=False, voltage=300E3, density=physics.PROTEIN_DENSITY,
+                     molecular_weight=physics.PROTEIN_MW, structure_tuple=None, gpu_id=0)
 
 
 # @jit(nopython=True) should use this? too many other function calls probably

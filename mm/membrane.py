@@ -16,8 +16,12 @@ import pyvista as pv
 import physics
 import mrcfile
 import support
+import scipy.ndimage as ndimage
 from scipy.spatial import distance
 from numba import jit
+from potential import read_structure, iasa_integration_parallel, iasa_integration_gpu
+from threadpoolctl import threadpool_info, threadpool_limits
+from voltools.utils import translation_matrix, rotation_matrix
 
 
 # =============================================== visuals ==============================================================
@@ -171,7 +175,7 @@ class Vector:
                                                                              'perpendicular vector')
             return orth
 
-    def get_rotation(self, other):
+    def get_rotation(self, other, as_transform_matrix=False):
         """
         Get rotation to rotate other vector onto self. Take the transpose of result to rotate self onto other.
         """
@@ -213,7 +217,15 @@ class Vector:
         tmp2 = x * s
         m21 = tmp1 + tmp2
         m12 = tmp1 - tmp2
-        return np.array([[m00, m01, m02], [m10, m11, m12], [m20, m21, m22]])
+
+        mat = np.array([[m00, m01, m02], [m10, m11, m12], [m20, m21, m22]])
+
+        if as_transform_matrix:  # make 4x4
+            out = np.identity(4)
+            out[:3, :3] = mat
+            mat = out
+
+        return mat
 
 
 def z_axis_rotation_matrix(angle):
@@ -235,20 +247,6 @@ def rotation_matrix_to_affine_matrix(rotation_matrix):
 
 
 # ======================================== SAMPLING POINTS ON ELLIPSE AND ELLIPSOID ====================================
-def get_point_ellipsoid(a, b, c, theta, phi):
-    sinTheta = np.sin(theta)
-    cosTheta = np.cos(theta)
-    sinPhi = np.sin(phi)
-    cosPhi = np.cos(phi)
-    # rx = a * sinPhi * cosTheta
-    # ry = b * sinPhi * sinTheta
-    # rz = c * cosPhi
-    rx = a * cosPhi * cosTheta
-    ry = b * cosPhi * sinTheta
-    rz = c * sinPhi
-    return np.array([rx, ry, rz])
-
-
 def random_point_ellipsoid(a, b, c):
     # a,b, and c are paremeters of the ellipsoid
     # generating random (x,y,z) points on ellipsoid
@@ -256,21 +254,20 @@ def random_point_ellipsoid(a, b, c):
     v = np.random.rand()
     theta = u * 2.0 * np.pi
     phi = np.arccos(2.0 * v - 1.0) - np.pi / 2
-    # phi = u * 2.0 * np.pi
-    # theta = np.arccos(2.0 * v - 1.0)
-    return get_point_ellipsoid(a, b, c, theta, phi)
 
+    rx = a * np.cos(phi) * np.cos(theta)
+    ry = b * np.cos(phi) * np.sin(theta)
+    rz = c * np.sin(phi)
 
-def get_point_ellipse(a, b, theta):
-    rx = a * np.cos(theta)
-    ry = b * np.sin(theta)
-    return np.array([rx, ry])
+    return np.array([rx, ry, rz])
 
 
 def random_point_ellipse(a, b):
     u = np.random.rand()
     theta = u * 2.0 * np.pi
-    return get_point_ellipse(a, b, theta)
+    rx = a * np.cos(theta)
+    ry = b * np.sin(theta)
+    return np.array([rx, ry])
 
 
 # ============================= HELPER FUNCTIONS FOR EQUILIBRATING ELLIPSE AND ELLIPSOIDS ==============================
@@ -687,17 +684,20 @@ def point_array_in_triangle(point_array, triangle):
 
 class Triangle:
     def __init__(self, points, normal):
-        assert (type(points[0]) is np.ndarray) and (len(points[0]) == 3), 'invalid triangle points provided'
+        assert isinstance(points[0], np.ndarray) and (len(points[0]) == 3), 'invalid triangle points provided'
         self.p1, self.p2, self.p3 = np.append(points[0], 1.), np.append(points[1], 1.), np.append(points[2], 1.)
         self.centroid = (1 / 3) * (points[0] + points[1] + points[2])
-        self.normal = Vector(normal)
+        if type(normal) is Vector:
+            self.normal = normal
+        else:
+            self.normal = Vector(normal)
 
     def update_centroid(self):
         self.centroid = (1 / 3) * (self.p1[:3] + self.p2[:3] + self.p3[:3])
 
     def get_transformed_triangle(self, matrix):
-        new_points = [np.dot(self.p1, matrix), np.dot(self.p2, matrix), np.dot(self.p3, matrix)]
-        new_normal = Vector(np.dot(self.normal.get(), matrix[:3, :3]))
+        new_points = [np.dot(self.p1, matrix)[:3], np.dot(self.p2, matrix)[:3], np.dot(self.p3, matrix)[:3]]
+        new_normal = np.dot(self.normal.get(), matrix[:3, :3])
         return Triangle(new_points, new_normal)
 
     def get_shifted_points(self, shift):
@@ -748,16 +748,16 @@ class Triangle:
         from mpl_toolkits.mplot3d import Axes3D  # <--- This is important for 3d plotting
 
         # first center triangle around origin
-        centered_triangle = self.get_shifted_points(-self.centroid)
+        triangle = self.get_points()
         normal = self.normal.get()
 
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(centered_triangle[:, 0], centered_triangle[:, 1], centered_triangle[:, 2])
-        ax.plot([0, normal[0]], [0, normal[1]], [0, normal[2]], color='blue')
-        ax.set_xlim3d(-.5, .5)
-        ax.set_ylim3d(-.5, .5)
-        ax.set_zlim3d(-.5, .5)
+        ax.scatter(triangle[:, 0], triangle[:, 1], triangle[:, 2])
+        ax.quiver(*self.centroid, *normal, color='blue')
+        if np.abs(triangle[:, 2].max() - triangle[:, 2].min()) < 0.001:
+            ax.set_zlim3d(triangle[:, 2].mean() - 1, triangle[:, 2].mean() + 1)
+        plt.show()
 
 
 class DistanceMatrix:
@@ -784,8 +784,9 @@ class DistanceMatrix:
 class Vesicle:
     def __init__(self, radius, voxel_spacing):
         self.radius = radius
-        self.radii = sorted((x * self.radius for x in (np.random.uniform(0.7, 1.3), np.random.uniform(0.7, 1.3),
-                                                       np.random.uniform(0.7, 1.3))), reverse=True)
+        # radius x10 to go to angstrom spacing of the vesicle, pdbs have angstrom units
+        self.radii = sorted((x * self.radius for x in (np.random.uniform(0.8, 1.2), np.random.uniform(0.8, 1.2),
+                                                       np.random.uniform(0.8, 1.2))), reverse=True)
         self.voxel_spacing = voxel_spacing
         self.reference_normal = Vector([.0, .0, 1.])  # dont see the point of making this an init param
         self.point_cloud = None
@@ -798,7 +799,7 @@ class Vesicle:
             points.append(random_point_ellipsoid(*self.radii))
         self.point_cloud = np.vstack(points)
 
-    def equilibrate_point_cloud(self, a=2, b=3, c=4, maxiter=10000, factor=0.01, display=False):
+    def equilibrate_point_cloud(self, maxiter=10000, factor=0.01, display=False):
         dmatrix = DistanceMatrix(self.point_cloud)
         mean_dist = dmatrix.mean_distance
 
@@ -826,6 +827,28 @@ class Vesicle:
             dmatrix.update(self.point_cloud, minp1)
             dmatrix.update(self.point_cloud, minp2)
 
+    def deform(self, strength):
+        # generate random deform grids in xyz
+        x_grid = (np.random.random((5, 5, 5)) - 0.5) * strength
+        y_grid = (np.random.random((5, 5, 5)) - 0.5) * strength
+        z_grid = (np.random.random((5, 5, 5)) - 0.5) * strength
+
+        x, y, z = self.point_cloud[:, 0], self.point_cloud[:, 1], self.point_cloud[:, 2]
+        x_sampling = ((x - x.min()) / (x.max() - x.min())) * 2
+        y_sampling = ((y - y.min()) / (y.max() - y.min())) * 2
+        z_sampling = ((z - z.min()) / (z.max() - z.min())) * 2
+        sampling = np.vstack((x_sampling, y_sampling, z_sampling))
+
+        x_deform = ndimage.map_coordinates(x_grid, sampling, order=2)
+        y_deform = ndimage.map_coordinates(y_grid, sampling, order=2)
+        z_deform = ndimage.map_coordinates(z_grid, sampling, order=2)
+
+        self.point_cloud[:, 0] += x_deform
+        self.point_cloud[:, 1] += y_deform
+        self.point_cloud[:, 2] += z_deform
+
+        print(f'deformed with 5x5 grid at strength {strength}')
+
     def generate_framework(self, alpha):
         """
         Pyvista can also directly generate an ellipsoid with:
@@ -844,19 +867,93 @@ class Vesicle:
         for i in range(shell.n_cells):  # make each surface cell a triangle in the framework
             self.framework.append(Triangle(shell.extract_cells(i).points, shell.cell_normals[i]))
 
-    def deform_framework(self, n=1, strength=1):
-        """
-        n is the number of deformation and strenght is how strong they should be.
-        """
-        pass
+    def sample_membrane(self, bilayer_pdb, cores=1):
+        # READ THE STRUCTURE: membrane pdb should have solvent deleted at this point
+        x_coordinates, y_coordinates, z_coordinates, \
+            elements, b_factors, occupancies = map(np.array, read_structure(bilayer_pdb))
+        z_coordinates -= z_coordinates.mean()  # center the layer in z
+        n_atoms_box = len(elements)
+        # get the periodic boundary box from the pdb file ==> membrane should be equilibrated with periodic boundaries
+        x_bound, y_bound, z_bound = boundary_box_from_pdb(bilayer_pdb)
 
-    def _deform(self, deformation):
-        # do a deformation
-        pass
+        membrane_x, membrane_y, membrane_z, membrane_e, membrane_b, membrane_o = [], [], [], [], [], []
 
-    def sample_membrane(self, bilayer_pdb):
-        # TODO copy the membrane sampling code to here
-        pass
+        atom_count = 0
+
+        user_apis = []
+        for lib in threadpool_info():
+            user_apis.append(lib['user_api'])
+        if 'blas' in user_apis:
+            print('BLAS in multithreading user apis, will try to limit number of threads for numpy.dot')
+
+        for i_cell, triangle in enumerate(self.framework):
+
+            # transform matrices
+            mat_origin_shift = translation_matrix(triangle.centroid).T
+            mat_ref_rot = self.reference_normal.get_rotation(triangle.normal, as_transform_matrix=True)
+            mat_plane_rot = rotation_matrix((np.random.uniform(0, 360), 0, 0), rotation_order='rzxz')
+
+            # get the transformed Triangle
+            transf_triangle = triangle.get_transformed_triangle(np.dot(np.dot(mat_origin_shift, mat_ref_rot),
+                                                                       mat_plane_rot))
+
+            # find the shift so that triangle is in the positive quadrant of the xy axes
+            shift_xy = np.append(transf_triangle.get_min()[:2], 0)  # already in xy plane so zshift should be 0
+            mat_xy_shift = translation_matrix(shift_xy).T
+
+            # construct the full transformation matrix to sample from the lipid layer
+            matrix = np.dot(np.dot(mat_origin_shift, mat_ref_rot), np.dot(mat_plane_rot, mat_xy_shift))
+
+            # transform triangle to get the x and y upper limits from it
+            transf_triangle = triangle.get_transformed_triangle(matrix)
+            xmax, ymax = transf_triangle.get_max()[:2]
+
+            # find xy limits of the triangle and find increase compared to lipid boundary box
+            xext = int(np.ceil(xmax / x_bound))
+            yext = int(np.ceil(ymax / y_bound))
+
+            atoms = np.empty((xext * yext * n_atoms_box, 4))  # numpy atom array with added dim for matrix mult
+            newe = np.zeros(xext * yext * n_atoms_box, dtype='<U1')
+            newb, newo = (np.zeros(xext * yext * n_atoms_box),) * 2
+
+            # make periodic copies of membrane box in xy so the triangle fits
+            for i in range(xext):
+                for j in range(yext):
+                    index = i * yext + j
+                    # add ones to 4th coordinate position for affine transformation
+                    atoms[index * n_atoms_box: (index + 1) * n_atoms_box, :] = np.array([x_coordinates + i * x_bound,
+                                                                                         y_coordinates + j * y_bound,
+                                                                                         z_coordinates,
+                                                                                         np.ones(n_atoms_box)]).T
+                    newe[index * n_atoms_box: (index + 1) * n_atoms_box] = elements.copy()
+                    newb[index * n_atoms_box: (index + 1) * n_atoms_box] = b_factors.copy()
+                    newo[index * n_atoms_box: (index + 1) * n_atoms_box] = occupancies.copy()
+
+            # find all atoms that fall in the triangle
+            locs = point_array_in_triangle(atoms[:, :2], transf_triangle.get_points()[:, :2])
+            atoms, newe, newb, newo = atoms[locs], newe[locs], newb[locs], newo[locs]
+
+            if 'blas' in user_apis:
+                with threadpool_limits(limits=cores, user_api='blas'):
+                    ratoms = np.dot(atoms, np.linalg.inv(matrix))  # multiply the atoms with the matrix inverse
+            else:
+                ratoms = np.dot(atoms, np.linalg.inv(matrix))
+
+            # add to the total atom lists
+            membrane_x += list(ratoms[:, 0])
+            membrane_y += list(ratoms[:, 1])
+            membrane_z += list(ratoms[:, 2])
+            membrane_e += list(newe)
+            membrane_b += list(newb)
+            membrane_o += list(newo)
+            atom_count += len(newe)  # count total atoms
+
+            # track the progress
+            if i_cell % 500 == 0:
+                print(f'At triangle {i_cell + 1} out of {len(self.framework)}. Current atom count is '
+                      f'{atom_count}.')
+
+        return membrane_x, membrane_y, membrane_z, membrane_e, membrane_b, membrane_o  # tuple
 
     def sample_protein(self, membrane_protein_pdb, n=1):
         """
@@ -880,7 +977,7 @@ class Vesicle:
 
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(points[:, 0], points[:, 1], points[:, 2])
+        ax.scatter(self.point_cloud[:, 0], self.point_cloud[:, 1], self.point_cloud[:, 2])
         if zlim is not None:
             ax.set_zlim3d(-zlim, zlim)
         ax.set_xlabel('x')
@@ -1034,9 +1131,9 @@ if __name__ == '__main__':
                                                  'be sampled from a MD-equilibrated lipid bilayer pdb structure with '
                                                  'periodic boundaries. -- Marten Chaillet (@McHaillet)')
     parser.add_argument('-r', '--radius', type=float, required=True,
-                        help='1 corresponds to a vesicle which has an average diameter of 45 nm across.')
+                        help='Average radius of the vesicle in nm.')
     parser.add_argument('-s', '--spacing', type=float, required=False, default=1,
-                        help='Voxel spacing.')
+                        help='Voxel spacing to sample electrostatic potential on in A.')
     parser.add_argument('-d', '--destination', type=str, required=False, default='./',
                         help='Folder to write output to, default is current folder.')
     parser.add_argument('-m', '--membrane-pdb', type=str, required=True,
@@ -1065,44 +1162,50 @@ if __name__ == '__main__':
         print('Destination for writing files does not exist, exiting...')
         sys.exit(0)
 
-    size_factor = args.radius  # default = 45 ??
-
-    # TODO set proper calculateion for vesicles size ==========================
-    # automatically scale these points
-    N = int(100 * size_factor**2.2)  # number of points
-    a, b, c = sorted((x*size_factor for x in (np.random.randint(180, 280), np.random.randint(180, 280),
-                                       np.random.randint(180, 280))), reverse=True)
+    # find good number of points to sample: a 23nm radius vesicle is good with 100 points
+    size_factor = args.radius / 23
+    sampling_points = int(100 * size_factor**2.2)  # number of points
     alpha = 2000 * size_factor
-    voxel = 5  # TODO args.spacing overwritten
-    # TODO ====================================================================
 
-    # generate an ellipsoid and triangulate it
-    print('Ellipsoid parameters: ', a, b, c)
-    points = sample_points_ellipsoid(N, a=a, b=b, c=c, evenly=True, maxiter=50000, factor=0.1)
-    surface = triangulate(points, alpha)
+    vesicle = Vesicle(args.radius * 10, args.spacing)  # radius in A
+    vesicle.sample_ellipsoid_point_cloud(sampling_points)
+    vesicle.equilibrate_point_cloud(maxiter=10000, factor=0.1)
+    vesicle.deform(args.radius / 4)
+    vesicle.generate_framework(alpha)
+    structure_tuple = vesicle.sample_membrane(args.membrane_pdb, cores=args.cores)
 
-    # fill the triangles with lipid molecules and calculate potential for it
-    volume = membrane_potential(surface, voxel, args.membrane_pdb, args.exclude_solvent, args.solvent_potential,
-                                args.voltage * 1e3, cores=args.cores, gpu_id=args.gpu_id)
-
-    name = 'bilayer'
-    size = f'{a*2/10:.0f}x{b*2/10:.0f}x{c*2/10:.0f}nm'  # double the values of the ellipsoid radii for actual size
+    # sample the atoms to voxels
+    if args.gpu_id is not None:
+        potential = iasa_integration_gpu('', args.spacing, solvent_exclusion=args.exclude_solvent,
+                                         V_sol=args.solvent_potential, absorption_contrast=True,
+                                         voltage=args.voltage * 1e3, density=physics.PROTEIN_DENSITY,
+                                         molecular_weight=physics.PROTEIN_MW, structure_tuple=structure_tuple,
+                                         gpu_id=args.gpu_id)
+    else:
+        potential = iasa_integration_parallel('', args.spacing, solvent_exclusion=args.exclude_solvent,
+                                              V_sol=args.solvent_potential, absorption_contrast=True,
+                                              voltage=args.voltage * 1e3, density=physics.PROTEIN_DENSITY,
+                                              molecular_weight=physics.PROTEIN_MW, structure_tuple=structure_tuple,
+                                              cores=args.cores)
 
     # filter and write
-    real_fil = support.reduce_resolution_fourier(volume.real, voxel, 2 * voxel).get()
-    imag_fil = support.reduce_resolution_fourier(volume.imag, voxel, 2 * voxel).get()
+    real_fil = support.reduce_resolution_fourier(potential.real, args.spacing, 2 * args.spacing).get()
+    imag_fil = support.reduce_resolution_fourier(potential.imag, args.spacing, 2 * args.spacing).get()
+
+    name = 'bilayer'  # double values to get diameters of ellipsoid
+    size = f'{vesicle.radii[0] * 2 / 10:.0f}x{vesicle.radii[1] * 2 / 10:.0f}x{vesicle.radii[2] * 2 / 10:.0f}nm'
 
     with mrcfile.new(os.path.join(args.destination,
-                                  f'{name}_{size}_{voxel:.2f}A_solvent-4.530V_real.mrc'),
+                                  f'{name}_{size}_{args.spacing:.2f}A_solvent-4.530V_real.mrc'),
                      overwrite=True) as mrc:
         mrc.set_data(real_fil)
-        mrc.voxel_size = voxel
+        mrc.voxel_size = args.spacing
 
     with mrcfile.new(os.path.join(args.destination,
-                                  f'{name}_{size}_{voxel:.2f}A_solvent-4.530V_imag_300V.mrc'),
+                                  f'{name}_{size}_{args.spacing:.2f}A_solvent-4.530V_imag_300V.mrc'),
                      overwrite=True) as mrc:
         mrc.set_data(imag_fil)
-        mrc.voxel_size = voxel
+        mrc.voxel_size = args.spacing
 
     # binning = 2
     #

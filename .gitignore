@@ -3,3 +3,4 @@
 
 # ignore __pychache__
 .pyc
+mm/__pycache__/

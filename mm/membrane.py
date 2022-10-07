@@ -102,7 +102,7 @@ class Vector:
         """
         Inverse the vector (in place).
         """
-        self._axis *= -1
+        return Vector(self._axis * -1)
 
     def cross(self, other):
         """
@@ -150,7 +150,7 @@ class Vector:
         """
         Rotate the vector in place by the rotation matrix.
         """
-        self._axis = np.dot(self._axis, rotation_matrix)
+        return Vector(np.dot(self._axis, rotation_matrix))
 
     def _get_orthogonal_unit_vector(self):
         """
@@ -399,9 +399,9 @@ def place_back_to_ellipsoid(point, a, b, c, maxiter=20):
 
     # find rotation of ellipsoid parameters so that a >= b >= c > 0 holds
     x, y, z, _ = distance_point_ellipsoid_octant(a, b, c, *v2.get(), maxiter=maxiter)
-    intersection = Vector([x, y, z])
-    intersection.rotate(octant_rotation_matrix)
-    return intersection.get()
+
+    # return the intersection rotated to right octant
+    return Vector([x, y, z]).rotate(octant_rotation_matrix).get()
 
 
 def test_place_back_to_ellipsoid(size=11, a=10, b=3, c=1, iterations=20):

@@ -647,12 +647,10 @@ def shift_triangle(triangle, shift):
 
 def point_in_triangle(pt, triangle):
     """
-    All points are numpy arrays of length 2, so points in 2D.
-    @param pt:
-    @param v1:
-    @param v2:
-    @param v3:
-    @return:
+    @param pt: xyz coordinate, array of length 3
+    @type pt: L{np.ndarray}
+    @param triangle: triangle array represented by 3 edges with xyz, i.e. shape (3,3)
+    @type triangle: L{np.ndarray}
     """
     v1 = triangle[0]
     v2 = triangle[1]
@@ -668,7 +666,12 @@ def point_in_triangle(pt, triangle):
 
 
 def point_array_in_triangle(point_array, triangle):
-
+    """
+    @param point_array: array with xyz points of shape (N, 3)
+    @type point_array: L{np.ndarray}
+    @param triangle: triangle array represented by 3 edges with xyz, i.e. shape (3,3)
+    @type triangle: L{np.ndarray}
+    """
     v1 = triangle[0]
     v2 = triangle[1]
     v3 = triangle[2]

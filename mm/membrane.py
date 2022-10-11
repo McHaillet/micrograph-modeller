@@ -72,13 +72,15 @@ def boundary_box_from_pdb(filename):
 class Vector:
     # Class can be used as both a 3d coordinate, and a vector
     # TODO SCIPY probably also has a vector class
-    def __init__(self, coordinates):
+    def __init__(self, coordinates, normalize=False):
         """
         Init vector with (x,y,z) coordinates, assumes (0,0,0) origin.
         """
         assert len(coordinates) == 3, 'Invalid axis list for a 3d vector, input does not contain 3 coordinates.'
         self._axis = np.array(coordinates)
         self._zero_vector = np.all(self._axis==0)
+        if normalize:
+            self.normalize()
 
     def get(self):
         """

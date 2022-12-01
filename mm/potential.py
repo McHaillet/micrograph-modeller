@@ -1192,9 +1192,9 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
         return real
 
 
-def iasa_integration_gpu_split(filepath, voxel_size=1., oversampling=1, solvent_exclusion=None,
-                     V_sol=physics.V_WATER, absorption_contrast=False, voltage=300E3, density=physics.PROTEIN_DENSITY,
-                     molecular_weight=physics.PROTEIN_MW, structure_tuple=None, gpu_id=0)
+# def iasa_integration_gpu_split(filepath, voxel_size=1., oversampling=1, solvent_exclusion=None,
+#                      V_sol=physics.V_WATER, absorption_contrast=False, voltage=300E3, density=physics.PROTEIN_DENSITY,
+#                      molecular_weight=physics.PROTEIN_MW, structure_tuple=None, gpu_id=0)
 
 
 # @jit(nopython=True) should use this? too many other function calls probably
@@ -1807,22 +1807,16 @@ def wrapper(filepath, output_folder, voxel_size, skip_structure_edit=False, over
     if np.iscomplexobj(v_atom):
         output_name = f'{pdb_id}_{voxel_size:.2f}A_solvent-{solvent_potential*solvent_factor:.3f}V'
         print(f'writing real and imaginary part with name {output_name}')
-        with mrcfile.new(os.path.join(output_folder, f'{output_name}_real.mrc'), overwrite=True) as mrc:
-            mrc.set_data(v_atom.real)
-            mrc.voxel_size = voxel_size
-        with mrcfile.new(os.path.join(output_folder, f'{output_name}_imag_{voltage*1E-3:.0f}V.mrc'),
-                         overwrite=True) as mrc:
-            mrc.set_data(v_atom.imag)
-            mrc.voxel_size = voxel_size
+        support.write_mrc(os.path.join(output_folder, f'{output_name}_real.mrc'), v_atom.real, voxel_size)
+        support.write_mrc(os.path.join(output_folder, f'{output_name}_imag_{voltage*1E-3:.0f}V.mrc'), v_atom.imag,
+                          voxel_size)
     else:
         if solvent_exclusion:
             output_name = f'{pdb_id}_{voxel_size:.2f}A_solvent-{solvent_potential*solvent_factor:.3f}V'
         else:
             output_name = f'{pdb_id}_{voxel_size:.2f}A'
         print(f'writing real part with name {output_name}')
-        with mrcfile.new(os.path.join(output_folder, f'{output_name}_real.mrc'), overwrite=True) as mrc:
-            mrc.set_data(v_atom)
-            mrc.voxel_size = voxel_size
+        support.write_mrc(os.path.join(output_folder, f'{output_name}_real.mrc'), v_atom, voxel_size)
 
     if binning > 1:
         # v_atom_binned = iasa_integration(f'{output_folder}/{structure}.pdb', voxel_size=voxel_size*binning,
@@ -1837,13 +1831,10 @@ def wrapper(filepath, output_folder, voxel_size, skip_structure_edit=False, over
 
             output_name = f'{pdb_id}_{voxel_size*binning:.2f}A_solvent-{solvent_potential*solvent_factor:.3f}V'
             print(f'writing real and imaginary part with name {output_name}')
-            with mrcfile.new(os.path.join(output_folder, f'{output_name}_real.mrc'), overwrite=True) as mrc:
-                mrc.set_data(binned[0])
-                mrc.voxel_size = voxel_size*binning
-            with mrcfile.new(os.path.join(output_folder, f'{output_name}_imag_{voltage * 1E-3:.0f}V.mrc'),
-                             overwrite=True) as mrc:
-                mrc.set_data(binned[1])
-                mrc.voxel_size = voxel_size*binning
+            support.write_mrc(os.path.join(output_folder, f'{output_name}_real.mrc'), binned[0],
+                              voxel_size*binning)
+            support.write_mrc(os.path.join(output_folder, f'{output_name}_imag_{voltage * 1E-3:.0f}V.mrc'),
+                              binned[1], voxel_size*binning)
 
         else:
             print(' - Binning volume')
@@ -1854,9 +1845,8 @@ def wrapper(filepath, output_folder, voxel_size, skip_structure_edit=False, over
             else:
                 output_name = f'{pdb_id}_{voxel_size*binning:.2f}A'
             print(f'writing real part with name {output_name}')
-            with mrcfile.new(os.path.join(output_folder, f'{output_name}_real.mrc'), overwrite=True) as mrc:
-                mrc.set_data(binned)
-                mrc.voxel_size = voxel_size * binning
+            support.write_mrc(os.path.join(output_folder, f'{output_name}_real.mrc'), binned,
+                              voxel_size * binning)
     return
 
 

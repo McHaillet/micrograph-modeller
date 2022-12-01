@@ -1,6 +1,21 @@
 import numpy as np
 import microscope
 import utils
+import mrcfile
+
+
+def read_mrc(filename):
+    with mrcfile.open(filename) as mrc:
+        data = mrc.data.T  # transpose because I use x y z indexing
+        voxel_size = mrc.voxel_size
+    return data, voxel_size
+
+
+def write_mrc(filename, data, voxel_size, overwrite=True):
+    assert not np.iscomplexobj(data), "cannot write complex objects to mrc"
+    with mrcfile.new(filename, overwrite=overwrite) as mrc:
+        mrc.set_data(data.astype(np.float32).T)  # transpose because I use x y z indexing
+        mrc.voxel_size = voxel_size
 
 
 def fwhm_to_sigma(fwhm):

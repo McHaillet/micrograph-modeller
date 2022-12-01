@@ -177,7 +177,7 @@ class Vector:
                                                                              'perpendicular vector')
             return orth
 
-    def get_rotation(self, other, as_transform_matrix=False):
+    def get_rotation(self, other, as_affine_matrix=False):
         """
         Get rotation to rotate other vector onto self. Take the transpose of result to rotate self onto other.
         """
@@ -222,7 +222,7 @@ class Vector:
 
         mat = np.array([[m00, m01, m02], [m10, m11, m12], [m20, m21, m22]])
 
-        if as_transform_matrix:  # make 4x4
+        if as_affine_matrix:  # make 4x4
             out = np.identity(4)
             out[:3, :3] = mat
             mat = out
@@ -895,7 +895,7 @@ class Vesicle:
 
             # transform matrices
             mat_origin_shift = translation_matrix(triangle.centroid).T
-            mat_ref_rot = self.reference_normal.get_rotation(triangle.normal, as_transform_matrix=True)
+            mat_ref_rot = self.reference_normal.get_rotation(triangle.normal, as_affine_matrix=True)
             mat_plane_rot = rotation_matrix((np.random.uniform(0, 360), 0, 0), rotation_order='rzxz')
 
             # get the transformed Triangle

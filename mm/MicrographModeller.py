@@ -5,8 +5,7 @@ Original simulator (used in SHREC2019) written by Gijs van der Schot, which was 
 TOM toolbox for matlab.
 """
 
-# IO related modules
-# from pytom.gui.mrcOperations import *
+# IO and parallel modules
 import configparser
 import tracemalloc
 import logging
@@ -14,12 +13,18 @@ import os
 import datetime
 import sys
 from tqdm import tqdm
+from joblib import Parallel, delayed
 
-# math
-# from pytom.basic.files import *
-import numpy as xp
+# for calculations
+import numpy as np
+import voltools as vt
+import scipy.ndimage as ndimage
 import random
-import pytom.simulation.physics as physics
+import physics
+import support
+import microscope
+import interpolate
+
 
 # Plotting, use Qt5Agg to prevent conflict with tkinter in pylab on cluster
 # import matplotlib
@@ -44,7 +49,7 @@ class ConfigLogger(object):
         self.__log.info(line)
 
 
-def downscale_class_mask(volume, binning, order=0):
+def downscale_class_mask(volume, binning):
     """
     Downscale class mask for binned reconstructions.
 
@@ -60,7 +65,6 @@ def downscale_class_mask(volume, binning, order=0):
 
     @author: Marten Chaillet
     """
-    from scipy.ndimage import zoom
 
     if binning == 1:
         return volume
@@ -69,7 +73,7 @@ def downscale_class_mask(volume, binning, order=0):
         print('Dtype of class mask/occupancy mask was not int, forcing to int.')
         volume.astype(int)
 
-    return zoom(volume, 1/binning, order=order)
+    return ndimage.zoom(volume, 1/binning, order=0)  # order 0 is nearest neighbour, thus will remain int
 
 
 def draw_range(range, datatype, name):
@@ -89,12 +93,12 @@ def draw_range(range, datatype, name):
     @rtype:  L{int} or L{float}
     """
     if type(range) == list and len(range) == 2:
-        xp.random.seed(seed)
+        np.random.seed(seed)
         random.seed(seed)
         if datatype == int:
-            return xp.random.randint(range[0], range[1])
+            return np.random.randint(range[0], range[1])
         elif datatype == float:
-            return xp.random.uniform(range[0], range[1])
+            return np.random.uniform(range[0], range[1])
     elif type(range) == list and len(range) == 1:
         if datatype == int:
             return int(range[0])
@@ -112,21 +116,20 @@ def draw_range(range, datatype, name):
 
 def motion_blur(model, spacing, sigma):
 
-    from pytom.simulation.microscope import fourier_grids, ctf_grids
+    blurring_filter = np.flip(
+        np.fft.ifftshift(np.exp(- 2 * np.pi ** 2 * sigma ** 2 *
+                                microscope.ctf_grids(
+                                    microscope.fourier_grids(model.shape, 1 / (2 * spacing), reduced=True))[1]),
+                         axes=(0, 1)), axis=2)
 
-    blurring_filter = xp.flip(xp.fft.ifftshift(xp.exp(- 2 * xp.pi ** 2 * sigma ** 2 *
-                                       ctf_grids(fourier_grids(model.shape, 1 / (2 * spacing), reduced=True))[1]),
-                                               axes=(0,1)), axis=2)
-
-    return xp.fft.irfftn(xp.fft.rfftn(model) * blurring_filter).real
+    return np.fft.irfftn(np.fft.rfftn(model) * blurring_filter).real
 
 
 def generate_model(particle_folder, save_path, listpdbs, listmembranes, pixel_size=1.0,
                    size=1024, thickness=200,
                    solvent_potential=physics.V_WATER, solvent_factor=1.0, number_of_particles=1000,
                    placement_size=512, retries=5000, number_of_markers=0,
-                   absorption_contrast=False, voltage=300E3, number_of_membranes=0, sigma_motion_blur=.0,
-                   particle_flipping=None):
+                   absorption_contrast=False, voltage=300E3, number_of_membranes=0, sigma_motion_blur=.0):
     """
     Generate a grand model of a cryo-EM sample. Particles, membranes and gold markers will be randomly rotated before
     being randomly placed in the volume. The program attempts to place the specified numbers, but only takes a max of
@@ -183,19 +186,17 @@ def generate_model(particle_folder, save_path, listpdbs, listmembranes, pixel_si
     @author: Gijs van der Schot, Ilja Gubins, Marten Chaillet
     """
     # IMPORTANT: We assume the particle models are in the desired voxel spacing for the pixel size of the simulation!
-    from pytom.simulation.potential import create_gold_marker
-    from pytom.voltools import transform
-    from pytom.agnostic.io import read_mrc, write
+    from potential import create_gold_marker
 
     # outputs
     X, Y, Z = size, size, thickness
-    cell_real = xp.zeros((X, Y, Z))
-    if absorption_contrast: cell_imag = xp.zeros_like(cell_real)
+    cell_real = np.zeros((X, Y, Z))
+    if absorption_contrast: cell_imag = np.zeros_like(cell_real)
 
-    # occupancy_bbox_mask = xp.zeros_like(cell_real)
-    occupancy_accurate_mask = xp.zeros_like(cell_real)
-    # class_bbox_mask = xp.zeros_like(cell_real)
-    class_accurate_mask = xp.zeros_like(cell_real)
+    # occupancy_bbox_mask = np.zeros_like(cell_real)
+    occupancy_accurate_mask = np.zeros_like(cell_real)
+    # class_bbox_mask = np.zeros_like(cell_real)
+    class_accurate_mask = np.zeros_like(cell_real)
     ground_truth_txt_file = ''
 
     # load pdb volumes and pad them
@@ -208,18 +209,22 @@ def generate_model(particle_folder, save_path, listpdbs, listmembranes, pixel_si
             filename_real       = os.path.join(particle_folder, f'{vol_base_name}_real.mrc')
             filename_imag       = os.path.join(particle_folder, f'{vol_base_name}_imag_{voltage*1E-3:.0f}V.mrc')
             # load the particle
-            vol_real = read_mrc(filename_real)
+            vol_real, pdb_spacing = support.read_mrc(filename_real)
+            assert pdb_spacing == pixel_size, "ERROR: sampled potential spacing stored in mrc does not match " \
+                                              "simulation pixel_size"
             if absorption_contrast:
-                vol_imag = read_mrc(filename_imag)
+                vol_imag, pdb_spacing = support.read_mrc(filename_imag)
+                assert pdb_spacing == pixel_size, "ERROR: sampled potential spacing stored in mrc does not match " \
+                                                  "simulation pixel_size"
                 # make sure real and imaginary part are the same size
                 if vol_real.shape != vol_imag.shape:
                     print(f'real and imaginary interaction potential not the same shape for {pdb}, skipping model')
                     continue
                 volumes_imag.append(vol_imag)
             volumes_real.append(vol_real)
-        except Exception as ee:
-            print(ee)
-            raise Exception(f'Could not open pdb {pdb}, skipping the model')
+        except FileNotFoundError:
+            print(f'could not find {pdb}, skipping this model')
+            continue
 
     # attributes
     number_of_classes = len(listpdbs)
@@ -235,7 +240,7 @@ def generate_model(particle_folder, save_path, listpdbs, listmembranes, pixel_si
         loc_x_end = loc_y_end = size
     else:
         loc_x_start = loc_y_start = difference // 2
-        loc_x_end = loc_y_end = int(size - xp.ceil(difference / 2))
+        loc_x_end = loc_y_end = int(size - np.ceil(difference / 2))
 
     # Add large cell structures, such as membranes first!
     if number_of_membranes:
@@ -249,37 +254,39 @@ def generate_model(particle_folder, save_path, listpdbs, listmembranes, pixel_si
         for _ in tqdm(range(number_of_membranes), desc='Placing membranes and micelles'):
 
             # Give membranes a numbered names to randomly index them
-            membrane_model = listmembranes[xp.random.randint(0, len(listmembranes))]
+            membrane_model = listmembranes[np.random.randint(0, len(listmembranes))]
 
-            # file names membranes
-            vol_base_name   = f'{membrane_model}_{pixel_size:.2f}A_solvent-{solvent_potential*solvent_factor:.3f}V'
-            filename_real       = os.path.join(particle_folder, f'{vol_base_name}_real.mrc')
-            filename_imag       = os.path.join(particle_folder, f'{vol_base_name}_imag_{voltage*1E-3:.0f}V.mrc')
-            # load the vesicle
-            membrane_vol_real = read_mrc(filename_real)
-            if absorption_contrast:
-                membrane_vol_imag = read_mrc(filename_imag)
-                if membrane_vol_real.shape != membrane_vol_imag.shape:
-                    print(f'skipped mebrane model {membrane_model} due to real and imaginary shape not matching')
-                    continue
-
-            u = xp.random.uniform(0.0, 1.0, (2,))
-            theta = xp.arccos(2 * u[0] - 1)
-            phi = 2 * xp.pi * u[1]
-            psi = xp.random.uniform(0.0, 2 * xp.pi)
-            p_angles = xp.rad2deg([theta, phi, psi])
-
-            # randomly mirror and rotate particle
             try:
-                membrane_vol_real = transform(membrane_vol_real, rotation=p_angles,
-                                        rotation_order='szxz', interpolation='linear', device='cpu')
-                if absorption_contrast: membrane_vol_imag = transform(membrane_vol_imag, rotation=p_angles,
-                                        rotation_order='szxz', interpolation='linear', device='cpu')
-                # do something to remove edge artifacts of rotation? linear instead of filt_bspline
-            except Exception as e:
-                print(e)
-                print('Something went wrong while rotating?')
+                # file names membranes
+                vol_base_name = f'{membrane_model}_{pixel_size:.2f}A_solvent-{solvent_potential*solvent_factor:.3f}V'
+                filename_real = os.path.join(particle_folder, f'{vol_base_name}_real.mrc')
+                filename_imag = os.path.join(particle_folder, f'{vol_base_name}_imag_{voltage*1E-3:.0f}V.mrc')
+                # load the vesicle
+                membrane_vol_real, mem_spacing = support.read_mrc(filename_real)
+                assert mem_spacing == pixel_size, "ERROR: sampled potential spacing stored in mrc does not match " \
+                                                  "simulation pixel_size"
+                if absorption_contrast:
+                    membrane_vol_imag, mem_spacing = support.read_mrc(filename_imag)
+                    assert mem_spacing == pixel_size, "ERROR: sampled potential spacing stored in mrc does not match " \
+                                                      "simulation pixel_size"
+                    if membrane_vol_real.shape != membrane_vol_imag.shape:
+                        print(f'skipped mebrane model {membrane_model} due to real and imaginary shape not matching')
+                        continue
+            except FileNotFoundError:
+                print(f'could not find {pdb}, skipping this model')
                 continue
+
+            u = np.random.uniform(0.0, 1.0, (2,))
+            theta = np.arccos(2 * u[0] - 1)
+            phi = 2 * np.pi * u[1]
+            psi = np.random.uniform(0.0, 2 * np.pi)
+            p_angles = np.rad2deg([theta, phi, psi])
+
+            # randomly rotate particle
+            membrane_vol_real = vt.transform(membrane_vol_real, rotation=p_angles,
+                                    rotation_order='szxz', interpolation='linear', device='cpu')
+            if absorption_contrast: membrane_vol_imag = vt.transform(membrane_vol_imag, rotation=p_angles,
+                                    rotation_order='szxz', interpolation='linear', device='cpu')
 
             threshold = 0.001
             membrane_vol_real[membrane_vol_real < threshold] = 0
@@ -295,10 +302,10 @@ def generate_model(particle_folder, save_path, listpdbs, listmembranes, pixel_si
             # x_cut_left, x_cut_right = 0,0
             x_cut_left, x_cut_right, y_cut_left, y_cut_right, z_cut_low, z_cut_high = 0,0,0,0,0,0
             while tries_left > 0:
-                # loc_x = xp.random.randint(loc_x_start + xx // 2 + 1, loc_x_end - xx // 2 - 1)
-                loc_x = xp.random.randint(loc_x_start, loc_x_end)
-                loc_y = xp.random.randint(loc_y_start, loc_y_end)
-                loc_z = xp.random.randint(0, Z)
+                # loc_x = np.random.randint(loc_x_start + xx // 2 + 1, loc_x_end - xx // 2 - 1)
+                loc_x = np.random.randint(loc_x_start, loc_x_end)
+                loc_y = np.random.randint(loc_y_start, loc_y_end)
+                loc_z = np.random.randint(0, Z)
 
                 tries_left -= 1
 
@@ -386,23 +393,17 @@ def generate_model(particle_folder, save_path, listpdbs, listmembranes, pixel_si
                 gold_real = create_gold_marker(pixel_size, solvent_potential, oversampling=2,
                                                  solvent_factor=solvent_factor)
 
-            u = xp.random.uniform(0.0, 1.0, (2,))
-            theta = xp.arccos(2 * u[0] - 1)
-            phi = 2 * xp.pi * u[1]
-            psi = xp.random.uniform(0.0, 2 * xp.pi)
-            p_angles = xp.rad2deg([theta, phi, psi])
+            u = np.random.uniform(0.0, 1.0, (2,))
+            theta = np.arccos(2 * u[0] - 1)
+            phi = 2 * np.pi * u[1]
+            psi = np.random.uniform(0.0, 2 * np.pi)
+            p_angles = np.rad2deg([theta, phi, psi])
 
-            # randomly mirror and rotate particle
-            try:
-                gold_real = transform(gold_real, rotation=p_angles,
-                                        rotation_order='szxz', interpolation='linear', device='cpu')
-                if absorption_contrast: gold_imag = transform(gold_imag, rotation=p_angles,
-                                        rotation_order='szxz', interpolation='linear', device='cpu')
-                # do something to remove edge artifacts of rotation? linear instead of filt_bspline
-            except Exception as e:
-                print(e)
-                print('Something went wrong while rotating?')
-                continue
+            # randomly rotate particle
+            gold_real = vt.transform(gold_real, rotation=p_angles,
+                                    rotation_order='szxz', interpolation='linear', device='cpu')
+            if absorption_contrast: gold_imag = vt.transform(gold_imag, rotation=p_angles,
+                                    rotation_order='szxz', interpolation='linear', device='cpu')
 
             threshold = 0.001
             gold_real[gold_real < threshold] = 0
@@ -415,9 +416,9 @@ def generate_model(particle_folder, save_path, listpdbs, listmembranes, pixel_si
             xx, yy, zz = gold_real.shape
             tries_left = default_tries_left
             while tries_left > 0:
-                loc_x = xp.random.randint(loc_x_start + xx // 2 + 1, loc_x_end - xx // 2 - 1)
-                loc_y = xp.random.randint(loc_y_start + yy // 2 + 1, loc_y_end - yy // 2 - 1)
-                loc_z = xp.random.randint(zz // 2 + 1, Z - zz // 2 - 1)
+                loc_x = np.random.randint(loc_x_start + xx // 2 + 1, loc_x_end - xx // 2 - 1)
+                loc_y = np.random.randint(loc_y_start + yy // 2 + 1, loc_y_end - yy // 2 - 1)
+                loc_z = np.random.randint(zz // 2 + 1, Z - zz // 2 - 1)
 
                 tries_left -= 1
 
@@ -467,46 +468,28 @@ def generate_model(particle_folder, save_path, listpdbs, listmembranes, pixel_si
 
         # select random class but correct for artifact class if adding gold particles
 
-        cls_id = xp.random.randint(0, number_of_classes - bool(number_of_markers) - bool(number_of_membranes))
+        cls_id = np.random.randint(0, number_of_classes - bool(number_of_markers) - bool(number_of_membranes))
 
         # generate random rotation
         # to be properly random, use uniform sphere sampling
         # https://math.stackexchange.com/a/442423/72032
         # https://en.wikipedia.org/wiki/Rotation_matrix#Uniform_random_rotation_matrices
         # http://corysimon.github.io/articles/uniformdistn-on-sphere/
-        u = xp.random.uniform(0.0, 1.0, (2,))
-        theta = xp.arccos(2 * u[0] - 1)
-        phi = 2 * xp.pi * u[1]
-        psi = xp.random.uniform(0.0, 2 * xp.pi)
-        p_angles = xp.rad2deg([theta, phi, psi])
+        u = np.random.uniform(0.0, 1.0, (2,))
+        theta = np.arccos(2 * u[0] - 1)
+        phi = 2 * np.pi * u[1]
+        psi = np.random.uniform(0.0, 2 * np.pi)
+        p_angles = np.rad2deg([theta, phi, psi])
 
-        # randomly mirror and rotate particle
-        try:
-            particle_real = volumes_real[cls_id]
-            if absorption_contrast: particle_imag = volumes_imag[cls_id]
+        # randomly rotate particle
+        particle_real = volumes_real[cls_id]
+        if absorption_contrast: particle_imag = volumes_imag[cls_id]
 
-            # Code for randomly flipping particles to add both handedness to the model, useful for generalizing
-            # training datasets
-            if particle_flipping == 'Random':
-                if xp.random.randint(2): # Generate true/false randomly
-                    # Mirror the particle to cover both left and right handedness of the proteins
-                    # TODO if particle is flipped it should be written down in the particle locations txt file
-                    ax = xp.random.randint(3)
-                    particle_real = xp.flip(particle_real, axis=ax)
-                    if absorption_contrast: particle_imag = xp.flip(particle_imag, axis=ax)
-            elif particle_flipping == 'Yes':
-                particle_real = xp.flip(particle_real, axis=0)  # the axis to flip does not matter for mirroring
-                if absorption_contrast: particle_imag = xp.flip(particle_imag, axis=0)
-
-            # Rotate particle to the specified orientation
-            rotated_particle_real = transform(particle_real, rotation=p_angles,
-                                         rotation_order='szxz', interpolation='filt_bspline', device='cpu')
-            if absorption_contrast: rotated_particle_imag = transform(particle_imag, rotation=p_angles,
-                                         rotation_order='szxz', interpolation='filt_bspline', device='cpu')
-        except Exception as e:
-            print(e)
-            print('Something went wrong while rotating?')
-            continue
+        # Rotate particle to the specified orientation
+        rotated_particle_real = vt.transform(particle_real, rotation=p_angles,
+                                     rotation_order='szxz', interpolation='filt_bspline', device='cpu')
+        if absorption_contrast: rotated_particle_imag = vt.transform(particle_imag, rotation=p_angles,
+                                     rotation_order='szxz', interpolation='filt_bspline', device='cpu')
 
         # remove particle rotation artifacts
         # threshold = min(volumes[cls_id][volumes[cls_id] > 0]) / 10
@@ -522,9 +505,9 @@ def generate_model(particle_folder, save_path, listpdbs, listmembranes, pixel_si
         xx, yy, zz = rotated_particle_real.shape
         tries_left = default_tries_left
         while tries_left > 0:
-            loc_x = xp.random.randint(loc_x_start + xx // 2 + 1, loc_x_end - xx // 2 - 1)
-            loc_y = xp.random.randint(loc_y_start + yy // 2 + 1, loc_y_end - yy // 2 - 1)
-            loc_z = xp.random.randint(zz // 2 + 1, Z - zz // 2 - 1)
+            loc_x = np.random.randint(loc_x_start + xx // 2 + 1, loc_x_end - xx // 2 - 1)
+            loc_y = np.random.randint(loc_y_start + yy // 2 + 1, loc_y_end - yy // 2 - 1)
+            loc_z = np.random.randint(zz // 2 + 1, Z - zz // 2 - 1)
 
             tries_left -= 1
 
@@ -586,16 +569,14 @@ def generate_model(particle_folder, save_path, listpdbs, listmembranes, pixel_si
 
     # save grandmodels
     print('Saving grandmodels')
-    write(filename_gm_real, cell_real)
-    if absorption_contrast: write(filename_gm_imag, cell_imag)
+    support.write_mrc(filename_gm_real, cell_real, pixel_size)
+    if absorption_contrast: support.write_mrc(filename_gm_imag, cell_imag, pixel_size)
     # save class masks
     print('Saving class volumes')
-    # pytom.agnostic.io.write(f'{save_path}/class_bbox.mrc', class_bbox_mask)
-    write(filename_cm, class_accurate_mask)
+    support.write_mrc(filename_cm, class_accurate_mask, pixel_size)
     # save occupancy masks
     print('Saving occupancy volumes')
-    # pytom.agnostic.io.write(f'{save_path}/occupancy_bbox.mrc', occupancy_bbox_mask)
-    write(filename_om, occupancy_accurate_mask)
+    support.write_mrc(filename_om, occupancy_accurate_mask, pixel_size)
     # save particle text file
     with open(filename_loc, 'w') as f:
         f.write(ground_truth_txt_file)
@@ -648,8 +629,7 @@ def create_ice_layer(shape, angle, width, value=1.0, sigma=0.0):
 
     @author: Marten Chaillet
     """
-    from scipy.ndimage import gaussian_filter
-    assert xp.abs(angle) <= 90, print('rotation angle of ice layer cannot be larger than +- 90 degrees.')
+    assert np.abs(angle) <= 90, print('rotation angle of ice layer cannot be larger than +- 90 degrees.')
 
     # get size
     xsize = shape[0]
@@ -657,30 +637,30 @@ def create_ice_layer(shape, angle, width, value=1.0, sigma=0.0):
     zsize = shape[2]
 
     # create coordinates for x and z
-    x = xp.arange(-xsize / 2, xsize / 2, 1, dtype=xp.float32)
-    z = xp.arange(-zsize / 2, zsize / 2, 1, dtype=xp.float32)
-    zm = xp.tile(z[xp.newaxis, :], [xsize, 1])
+    x = np.arange(-xsize / 2, xsize / 2, 1, dtype=np.float32)
+    z = np.arange(-zsize / 2, zsize / 2, 1, dtype=np.float32)
+    zm = np.tile(z[np.newaxis, :], [xsize, 1])
 
     # draw x values dependent on angle
-    xline = x * xp.tan(-angle * xp.pi / 180)
-    nwidth = width / xp.cos(angle * xp.pi / 180)
+    xline = x * np.tan(-angle * np.pi / 180)
+    nwidth = width / np.cos(angle * np.pi / 180)
     xmin = xline - nwidth / 2
     xmax = xline + nwidth / 2
 
     # gradient for min and max value of x
-    square_min = xp.tile(xmin[:, xp.newaxis], [1, zsize])
-    square_max = xp.tile(xmax[:, xp.newaxis], [1, zsize])
+    square_min = np.tile(xmin[:, np.newaxis], [1, zsize])
+    square_max = np.tile(xmax[:, np.newaxis], [1, zsize])
 
     # Create smooth edge for side 1 of the layer
     grad1 = zm - square_min
-    range1 = xp.abs(grad1.min() - grad1.max())
+    range1 = np.abs(grad1.min() - grad1.max())
     c1 = (range1 / grad1.shape[0]) / 0.5
     grad1[grad1 > c1] = c1
     grad1[grad1 < -c1] = -c1
     grad1 = (grad1 - grad1.min()) / (grad1.max() - grad1.min())
     # Create smooth edge for side 2 of the layer
     grad2 = square_max - zm
-    range2 = xp.abs(grad2.min() - grad2.max())
+    range2 = np.abs(grad2.min() - grad2.max())
     c2 = (range2 / grad2.shape[0]) / 0.5
     grad2[grad2 > c2] = c2
     grad2[grad2 < -c2] = -c2
@@ -692,12 +672,12 @@ def create_ice_layer(shape, angle, width, value=1.0, sigma=0.0):
 
     # if a sigma is provided apply gaussian filter
     if not (sigma == 0.0):
-        layer = gaussian_filter(grad1 * grad2 * value, sigma=sigma)
+        layer = ndimage.gaussian_filter(grad1 * grad2 * value, sigma=sigma)
     else:
         layer = grad1 * grad2 * value
 
     # before returning tile the 2d layer to a volume
-    return xp.tile(layer[:, xp.newaxis, :], [1, ysize, 1])
+    return np.tile(layer[:, np.newaxis, :], [1, ysize, 1])
 
 
 def microscope_single_projection(noisefree_projection, dqe, mtf, dose, pixel_size, oversampling=1):
@@ -727,37 +707,35 @@ def microscope_single_projection(noisefree_projection, dqe, mtf, dose, pixel_siz
 
     @author: Marten Chaillet
     """
-    # from scipy.ndimage import shift
-
-    ntf = xp.sqrt(mtf ** 2 / dqe)  # square root because dqe = mtf^2 / ntf^2
-    ntf = xp.maximum(ntf, 1E-7)  # ensure we do not divide by zero
-    mtf_shift = xp.fft.ifftshift(mtf)
-    ntf_shift = xp.fft.ifftshift(ntf)
+    ntf = np.sqrt(mtf ** 2 / dqe)  # square root because dqe = mtf^2 / ntf^2
+    ntf = np.maximum(ntf, 1E-7)  # ensure we do not divide by zero
+    mtf_shift = np.fft.ifftshift(mtf)
+    ntf_shift = np.fft.ifftshift(ntf)
 
     # NUMBER OF ELECTRONS PER PIXEL
     dose_per_pixel = dose * (pixel_size*1E10)**2 / oversampling**2 # from square A to square nm (10A pixels)
     print(f'Number of electrons per pixel (before oversampling and sample absorption): {dose_per_pixel:.2f}')
 
     # Fourier transform and multiply with sqrt(dqe) = mtf/ntf
-    projection_fourier = xp.fft.fftn(noisefree_projection) * mtf_shift / ntf_shift
+    projection_fourier = np.fft.fftn(noisefree_projection) * mtf_shift / ntf_shift
     # projection_fourier = projection_fourier
     # Convert back to real space
-    projection = xp.real(xp.fft.ifftn(projection_fourier))
+    projection = np.real(np.fft.ifftn(projection_fourier))
     projection[projection<0] = 0
 
     # Apply poissonian noise
-    projection_poisson = xp.zeros(projection.shape)
+    projection_poisson = np.zeros(projection.shape)
     for _ in range(oversampling**2):
         # Sample from the poisson distribution for oversampling^2 to account for the coarse graining of the simulation.
         # Normally in oversampling multiple pixels are averaged, obtaining a mean value of multiple poisson distributed
         # variables.
-        poisson_intermediate = xp.random.poisson(lam=projection * dose_per_pixel)
-        projection_poisson += xp.real(xp.fft.ifftn(xp.fft.fftn(poisson_intermediate) * ntf_shift)) / oversampling**2
+        poisson_intermediate = np.random.poisson(lam=projection * dose_per_pixel)
+        projection_poisson += np.real(np.fft.ifftn(np.fft.fftn(poisson_intermediate) * ntf_shift)) / oversampling ** 2
 
     # Add additional noise from digitization process, less relevant for modern day cameras.
     # readout noise standard deviation can be 7 ADUs, from Vulovic et al., 2010
     # sigma_readout = 7
-    # readsim = xp.random.normal(0, sigma_readout, projection.shape) # readout noise has a gaussian distribution
+    # readsim = np.random.normal(0, sigma_readout, projection.shape) # readout noise has a gaussian distribution
     # darksim = 0     # dark current noise has a poisson distribution, usually an order of magnitude smaller than
     #                 # readout noise and can hence be neglected
 
@@ -767,9 +745,11 @@ def microscope_single_projection(noisefree_projection, dqe, mtf, dose, pixel_siz
     return projection_poisson
 
 
+# TODO transform the volume with numba parallel function
 def parallel_project(grandcell, frame, image_size, pixel_size, msdz, n_slices, ctf, dose, dqe, mtf, voltage,
                      oversampling=1, translation=(.0,.0,.0), rotation=(.0,.0,.0), scale=(1., 1., 1.),
-                     solvent_potential=physics.V_WATER, solvent_absorption=.0, ice_thickness_voxels=None, beam_damage_snr=0):
+                     solvent_potential=physics.V_WATER, solvent_absorption=.0, ice_thickness_voxels=None,
+                     beam_damage_snr=0):
     """
     Project grandcell to create a frame/tilt. The grandcell will first be transformed according to the rotation and
     translation parameters, before projection. Microscope functions such as CTF, DQE, MTF need to be supplied. This
@@ -818,8 +798,6 @@ def parallel_project(grandcell, frame, image_size, pixel_size, msdz, n_slices, c
 
     @author: Marten Chaillet
     """
-    from pytom.voltools import transform
-    from pytom.simulation.microscope import transmission_function, fresnel_propagator
 
     print('Transforming sample for tilt/frame ', frame)
 
@@ -827,10 +805,10 @@ def parallel_project(grandcell, frame, image_size, pixel_size, msdz, n_slices, c
 
     # think of a rotating cube in a larger box
     # sample box height = image_size * sin(tilt_angle) + ice_height * sin(90 - tilt_angle)
-    max_tilt_radians = abs(rotation[1]) * xp.pi / 180
-    max_tilt_radians_opp = (90 - abs(rotation[1])) * xp.pi / 180
-    rotation_height = int(xp.ceil(xp.sin(max_tilt_radians) * image_size +
-                                           xp.sin(max_tilt_radians_opp) * ice_thickness_voxels))
+    max_tilt_radians = abs(rotation[1]) * np.pi / 180
+    max_tilt_radians_opp = (90 - abs(rotation[1])) * np.pi / 180
+    rotation_height = int(np.ceil(np.sin(max_tilt_radians) * image_size +
+                                  np.sin(max_tilt_radians_opp) * ice_thickness_voxels))
     print(f'Reduced rotation height for relevant specimens: {rotation_height}')
     if rotation_height % 2: rotation_height += 1
     diff = sample.shape[2]-rotation_height
@@ -839,17 +817,17 @@ def parallel_project(grandcell, frame, image_size, pixel_size, msdz, n_slices, c
     # model parameter is a complex volume or real volume depending on the addition of absorption contrast
     # first transform the volume
     if sample.dtype == 'complex64':
-        transform(sample[...,i:-i].real, translation=translation, rotation=rotation, rotation_order='sxyz',
-                  scale=scale, interpolation='filt_bspline', device='cpu', output=sample[...,i:-i].real)
-        transform(sample[...,i:-i].imag, translation=translation, rotation=rotation, rotation_order='sxyz', scale=scale,
-                  interpolation='filt_bspline', device='cpu', output=sample[...,i:-i].imag)
+        vt.transform(sample[..., i:-i].real, translation=translation, rotation=rotation, rotation_order='sxyz',
+                     scale=scale, interpolation='filt_bspline', device='cpu', output=sample[..., i:-i].real)
+        vt.transform(sample[..., i:-i].imag, translation=translation, rotation=rotation, rotation_order='sxyz',
+                     scale=scale, interpolation='filt_bspline', device='cpu', output=sample[..., i:-i].imag)
         # remove rotation artifacts
         threshold = 0.001
         sample.real[sample.real < threshold] = 0
         sample.imag[sample.imag < threshold] = 0
     elif sample.dtype == 'float32':
-        transform(sample[...,i:-i], translation=translation, rotation=rotation, rotation_order='sxyz', scale=scale,
-                                interpolation='filt_bspline', device='cpu', output=sample[...,i:-i])
+        vt.transform(sample[..., i:-i], translation=translation, rotation=rotation, rotation_order='sxyz',
+                     scale=scale, interpolation='filt_bspline', device='cpu', output=sample[..., i:-i])
         # remove rotation artifacts
         threshold = 0.001
         sample[sample < threshold] = 0
@@ -867,70 +845,71 @@ def parallel_project(grandcell, frame, image_size, pixel_size, msdz, n_slices, c
         sample.imag += create_ice_layer(sample.shape, rotation[1], ice_thickness_voxels, value=solvent_absorption,
                                         sigma=0.0)
 
-    if n_slices==box_height and image_size==box_size:
+    if n_slices == box_height and image_size == box_size:
         projected_potent_ms = sample
         px_per_slice = 1
         num_px_last_slice = box_height % px_per_slice
     else:
         ileft = (box_size - image_size) // 2
-        iright = -int(xp.ceil((box_size - image_size) / 2))
+        iright = -int(np.ceil((box_size - image_size) / 2))
 
         # Allocate space for multislice projection
-        projected_potent_ms = xp.zeros((image_size, image_size, n_slices), dtype=xp.complex64)
+        projected_potent_ms = np.zeros((image_size, image_size, n_slices), dtype=np.complex64)
 
         px_per_slice = int(msdz/pixel_size)
         num_px_last_slice = box_height % px_per_slice  # consider last slice might have a different number of pixels
 
         # Project potential for each slice (phase grating)
         for ii in range(n_slices):
-            if ileft==0 and iright==0:
-                projected_potent_ms[:, :, ii] = sample[:,:, ii * px_per_slice: (ii + 1) * px_per_slice].mean(axis=2) #.get()
+            if ileft == 0 and iright == 0:
+                projected_potent_ms[:, :, ii] = sample[:, :,
+                                                ii * px_per_slice: (ii + 1) * px_per_slice].mean(axis=2)
             else:
                 projected_potent_ms[:, :, ii] = sample[ileft:iright, ileft:iright,
-                                                ii * px_per_slice: (ii + 1) * px_per_slice].mean(axis=2) #.get()
+                                                ii * px_per_slice: (ii + 1) * px_per_slice].mean(axis=2)
     # at this point we no longer need the sample, because all information in now contained in the projected slices
     # free the memory to accomodate space
     del sample
 
     # calculate the transmission function for each slice
-    psi_t = transmission_function(projected_potent_ms, voltage, msdz)
+    psi_t = microscope.transmission_function(projected_potent_ms, voltage, msdz)
 
     # calculate the fresnel propagator (identical for same dz)
-    propagator = fresnel_propagator(image_size, pixel_size, voltage, msdz)
+    propagator = microscope.fresnel_propagator(image_size, pixel_size, voltage, msdz)
 
     # Wave propagation with MULTISLICE method, psi_multislice is complex
-    psi_multislice = xp.zeros((image_size,image_size), dtype=xp.complex64) + 1 # +1 for initial probability
+    psi_multislice = np.zeros((image_size, image_size), dtype=np.complex64) + 1  # +1 for initial probability
 
     # Loop over all the slices, except the last one if it has a different slice size
-    for ii in range(n_slices-min(1,num_px_last_slice)):
-        wave_field = xp.fft.fftn( xp.fft.ifftshift(psi_multislice) * xp.fft.ifftshift(psi_t[:, :, ii]) )
-        psi_multislice = xp.fft.fftshift( xp.fft.ifftn((wave_field * xp.fft.ifftshift(propagator) )) )
+    for ii in range(n_slices-min(1, num_px_last_slice)):
+        wave_field = np.fft.fftn(np.fft.ifftshift(psi_multislice) * np.fft.ifftshift(psi_t[:, :, ii]))
+        psi_multislice = np.fft.fftshift(np.fft.ifftn((wave_field * np.fft.ifftshift(propagator))))
 
     # Calculate propagation through last slice in case the last slice contains a different number of pixels
     if num_px_last_slice:
         msdz_end = num_px_last_slice * pixel_size
-        psi_t[:, :, -1] = transmission_function(projected_potent_ms[:, :, -1], voltage, msdz_end)
-        propagator_end = fresnel_propagator(image_size, pixel_size, voltage, msdz_end)
-        wave_field = xp.fft.fftn( xp.fft.ifftshift(psi_multislice) * xp.fft.ifftshift(psi_t[:, :, -1]) )
-        psi_multislice = xp.fft.fftshift( xp.fft.ifftn( wave_field * xp.fft.ifftshift(propagator_end) ) )
+        psi_t[:, :, -1] = microscope.transmission_function(projected_potent_ms[:, :, -1], voltage, msdz_end)
+        propagator_end = microscope.fresnel_propagator(image_size, pixel_size, voltage, msdz_end)
+        wave_field = np.fft.fftn(np.fft.ifftshift(psi_multislice) * np.fft.ifftshift(psi_t[:, :, -1]))
+        psi_multislice = np.fft.fftshift(np.fft.ifftn(wave_field * np.fft.ifftshift(propagator_end)))
 
     # Multiple by CTF for microscope effects on electron wave
-    wave_ctf = xp.fft.ifftshift(ctf) * xp.fft.fftn(xp.fft.ifftshift(psi_multislice) )
+    wave_ctf = np.fft.ifftshift(ctf) * np.fft.fftn(np.fft.ifftshift(psi_multislice))
     # Intensity in image plane is obtained by taking the absolute square of the wave function
-    noisefree_projection = xp.abs(xp.fft.fftshift(xp.fft.ifftn(wave_ctf))) ** 2
+    noisefree_projection = np.abs(np.fft.fftshift(np.fft.ifftn(wave_ctf))) ** 2
 
     # TODO Beam damage might be better modelled as a Gaussian drop off that increases in the order of projecting
     if beam_damage_snr > 0.0:
-        sigma_signal = noisefree_projection[noisefree_projection>0.1].std()
+        sigma_signal = noisefree_projection[noisefree_projection > 0.1].std()
         # snr = sigma_signal**2 / sigma_noise**2
-        sigma_damage = xp.sqrt(sigma_signal**2 / beam_damage_snr)
+        sigma_damage = np.sqrt(sigma_signal ** 2 / beam_damage_snr)
         print(f'Standard deviation in beam damage SNR set to {sigma_damage} for SNR of {beam_damage_snr}')
-        beam_noise = xp.random.normal(0, scale=sigma_damage, size=noisefree_projection.shape)
+        beam_noise = np.random.normal(0, scale=sigma_damage, size=noisefree_projection.shape)
     else:
         beam_noise = 0
 
     # DEBUGGING
-    # test = xp.log(xp.abs(xp.fft.fftshift(xp.fft.fftn(noisefree_projection))))
+    # test = np.log(np.abs(np.fft.fftshift(np.fft.fftn(noisefree_projection))))
     # r1, m1 = radial_average(test)
     # fig, ax = plt.subplots()
     # ax.plot(r1, m1)
@@ -940,10 +919,9 @@ def parallel_project(grandcell, frame, image_size, pixel_size, msdz, n_slices, c
     # Apply the microscope function
     projection = microscope_single_projection(noisefree_projection + beam_noise, dqe, mtf, dose, pixel_size,
                                               oversampling=oversampling)
-    # Write the projection to the projection folder
-    # pytom.agnostic.io.write(f'{folder}/synthetic_{frame+1}.mrc', projection)
+
     # Return noisefree and projection as tuple for writing as mrc stack in higher function
-    return (noisefree_projection, projection)
+    return noisefree_projection, projection
 
 
 def generate_tilt_series_cpu(save_path,
@@ -1039,43 +1017,35 @@ def generate_tilt_series_cpu(save_path,
 
     @author: Marten Chaillet
     """
-    from pytom.basic.datatypes import DATATYPE_ALIGNMENT_RESULTS as dar
-    from pytom.basic.datatypes import DATATYPE_METAFILE as dmf
-    from pytom.basic.datatypes import fmtAlignmentResults, HEADER_ALIGNMENT_RESULTS, FMT_METAFILE, HEADER_METAFILE
-    from pytom.gui.guiFunctions import savestar
-    from pytom.simulation.microscope import create_detector_response, create_complex_ctf
-    from pytom.simulation.microscope import convert_defocus_astigmatism_to_defocusU_defocusV
-    from pytom.agnostic.io import read_mrc, write
-    from joblib import Parallel, delayed
     # NOTE; Parameter defocus specifies the defocus at the bottom of the model!
 
     if grandcell is None:
         # grab model
         filename_gm_real = os.path.join(save_path, 'grandmodel.mrc')
         filename_gm_imag = os.path.join(save_path, 'grandmodel_imag.mrc')
-        grandcell = read_mrc(filename_gm_real)
+        grandcell, _ = support.read_mrc(filename_gm_real)
         if absorption_contrast:
             # set dtype to be complex64 to save memory
-            xp_type = xp.complex64
+            xp_type = np.complex64
             grandcell = grandcell.astype(xp_type)
-            grandcell.imag = read_mrc(filename_gm_imag)
+            grandcell.imag, _ = support.read_mrc(filename_gm_imag)
             # calculate the absorption for amorphous ice at the specified voltage
             solvent_amplitude = physics.potential_amplitude(physics.AMORPHOUS_ICE_DENSITY, physics.WATER_MW, voltage)
             print(f'solvent absorption = {solvent_amplitude:.3f}')
         else:
             # set dtype as float32 to save memory
-            xp_type = xp.float32
+            xp_type = np.float32
             grandcell = grandcell.astype(xp_type)
             solvent_amplitude = 0.0
     else:
         if grandcell.dtype == complex:
             solvent_amplitude = physics.potential_amplitude(physics.AMORPHOUS_ICE_DENSITY, physics.WATER_MW, voltage)
             # set dtype to be complex64 to save memory
-            xp_type = xp.complex64
+            xp_type = np.complex64
             grandcell = grandcell.astype(xp_type)
         else:
             # set dtype as float32 to save memory
-            xp_type = xp.float32
+            xp_type = np.float32
             grandcell = grandcell.astype(xp_type)
             solvent_amplitude = 0.0
 
@@ -1097,7 +1067,7 @@ def generate_tilt_series_cpu(save_path,
     # For sample set the arrays specifically to np.complex64 datatype to save memory space
     if rotation_box_height is not None:
         # Use the specified rotation box height
-        rotation_volume = xp.zeros((box_size, box_size, rotation_box_height), dtype=xp_type)  # complex or real
+        rotation_volume = np.zeros((box_size, box_size, rotation_box_height), dtype=xp_type)  # complex or real
         offset = (rotation_box_height - box_height) // 2
 
         if (rotation_box_height - box_height) % 2:
@@ -1109,12 +1079,12 @@ def generate_tilt_series_cpu(save_path,
         # think of rotating parallel lines in a box
         # rotation_height = ice_height / cos(tilt_angle) + image_size * tan(tilt_angle)
         max_tilt = max([abs(a) for a in angles])
-        max_tilt_radians = max_tilt * xp.pi / 180
-        rotation_box_height = int(xp.ceil(xp.tan(max_tilt_radians) * image_size +
-                                          box_height / xp.cos(max_tilt_radians)))
+        max_tilt_radians = max_tilt * np.pi / 180
+        rotation_box_height = int(np.ceil(np.tan(max_tilt_radians) * image_size +
+                                          box_height / np.cos(max_tilt_radians)))
         if rotation_box_height % 2: rotation_box_height += 1
         # Place grandcell in rotation volume
-        rotation_volume = xp.zeros((box_size, box_size, rotation_box_height), dtype=xp_type)
+        rotation_volume = np.zeros((box_size, box_size, rotation_box_height), dtype=xp_type)
         offset = (rotation_box_height - box_height) // 2
 
         if (rotation_box_height - box_height) % 2:
@@ -1131,7 +1101,7 @@ def generate_tilt_series_cpu(save_path,
     # Check if msdz is viable, else correct it
     if msdz % pixel_size != 0:
         # Round the msdz to the closest integer mutltiple of the pixel size
-        round_up = xp.round(msdz % pixel_size / pixel_size)
+        round_up = np.round(msdz % pixel_size / pixel_size)
         if round_up:
             msdz += (pixel_size - msdz % pixel_size)
         else:
@@ -1149,7 +1119,7 @@ def generate_tilt_series_cpu(save_path,
         print(
             'The multislice steps can not be smaller than the pixel size. Use the pixel size instead for the step size.\n')
     else:
-        n_slices = int(xp.ceil(xp.around(zheight / msdz, 3)))
+        n_slices = int(np.ceil(np.around(zheight / msdz, 3)))
     print('Number of slices for multislice: ', n_slices)
 
     # determine dose per frame
@@ -1161,36 +1131,36 @@ def generate_tilt_series_cpu(save_path,
     in_plane_rotations = []
     for i in range(len(angles)):
         # generate random translation
-        x = xp.random.normal(0, sigma_shift) / (pixel_size*1E10)
-        y = xp.random.normal(0, sigma_shift) / (pixel_size*1E10)
+        x = np.random.normal(0, sigma_shift) / (pixel_size * 1E10)
+        y = np.random.normal(0, sigma_shift) / (pixel_size * 1E10)
         translations.append((x, y, 0.0))
 
         # generate random in plane rotation
-        in_plane_rotations.append(xp.random.normal(0, sigma_angle_in_plane_rotation))
+        in_plane_rotations.append(np.random.normal(0, sigma_angle_in_plane_rotation))
 
         # add magnifications
         if sigma_magnification != 0:
             gamma_a = 1. / (sigma_magnification ** 2)  # a = 1 / sigma**2
             gamma_b = 1. / gamma_a                     # b = mu / a
             # generate random magnification
-            mag = xp.random.gamma(gamma_a, gamma_b)
+            mag = np.random.gamma(gamma_a, gamma_b)
             magnifications.append((mag, mag, 1.))
         else:
             magnifications.append((1., 1., 1.))
 
         # random dz for tilt angle
-        angles[i] += xp.random.normal(0, sigma_tilt_angle)
+        angles[i] += np.random.normal(0, sigma_tilt_angle)
 
-    # defocus_series = [xp.random.normal(defocus, 0.2E-6) for a in angles]
+    # defocus_series = [np.random.normal(defocus, 0.2E-6) for a in angles]
     ctf_series = []
     dz_series, ast_series, ast_angle_series = [], [], []
     for x in angles:
         # todo currently input astigmatism is overriden by these options
         # todo add these options for frame series
-        dz = xp.random.normal(defocus, 0.2e-6)
-        ast = xp.random.normal(astigmatism, 0.1e-6)  # introduce astigmastism with 100 nm variation
-        ast_angle = xp.random.normal(astigmatism_angle, 5)  # vary angle randomly around a 40 degree angle
-        ctf = create_complex_ctf((image_size, image_size), pixel_size, dz, voltage=voltage,
+        dz = np.random.normal(defocus, 0.2e-6)
+        ast = np.random.normal(astigmatism, 0.1e-6)  # introduce astigmastism with 100 nm variation
+        ast_angle = np.random.normal(astigmatism_angle, 5)  # vary angle randomly around a 40 degree angle
+        ctf = microscope.create_complex_ctf((image_size, image_size), pixel_size, dz, voltage=voltage,
                                      Cs=spherical_aberration, Cc=chromatic_aberration, energy_spread=energy_spread,
                                      illumination_aperture=illumination_aperture, objective_diameter=objective_diameter,
                                      focus_length=focus_length, astigmatism=ast,
@@ -1200,9 +1170,9 @@ def generate_tilt_series_cpu(save_path,
         ast_series.append(ast)
         ast_angle_series.append(ast_angle)
 
-    dqe = create_detector_response(camera_type, 'DQE', image_size, voltage=voltage,
+    dqe = microscope.create_detector_response(camera_type, 'DQE', image_size, voltage=voltage,
                                             folder=camera_folder, oversampling=oversampling)
-    mtf = create_detector_response(camera_type, 'MTF', image_size, voltage=voltage,
+    mtf = microscope.create_detector_response(camera_type, 'MTF', image_size, voltage=voltage,
                                             folder=camera_folder, oversampling=oversampling)
 
     # joblib automatically memory maps a numpy array to child processes
@@ -1230,72 +1200,30 @@ def generate_tilt_series_cpu(save_path,
     # write (noisefree) projections as mrc stacks
     filename_nf = os.path.join(save_path, 'noisefree_projections.mrc')
     filename_pr = os.path.join(save_path, 'projections.mrc')
-    write(filename_nf, xp.stack([n for (n, p) in results], axis=2))
-    write(filename_pr, xp.stack([p for (n, p) in results], axis=2))
-
-    # todo create alignment and misalignment file, in reconstruction choice for alignment and misalignment
-    # store alignment information
-    # len(angles) is the number of files that we have
-    alignment                       = xp.zeros(len(angles), dtype=dar)
-    # IMPORTANT: get the inverse of each parameter for correct reconstruction
-    alignment['TiltAngle']          = -1. * xp.array(angles)
-    alignment['Magnification']      = 1. / xp.array([x for (x, y, z) in magnifications])
-    alignment['AlignmentTransX']    = -1 * xp.array([x for (x, y, z) in translations])
-    alignment['AlignmentTransY']    = -1 * xp.array([y for (x, y, z) in translations])
-    alignment['InPlaneRotation']    = -1 * xp.array(in_plane_rotations)
-    for i in range(len(angles)):
-        alignment['FileName'][i]    = os.path.join(save_path, 'projections', f'synthetic_{i+1}.mrc')
-
-    # write the alignment file
-    filename_align                      = os.path.join(save_path, 'alignment_simulated.txt')
-    savestar(filename_align, alignment, fmt=fmtAlignmentResults, header=HEADER_ALIGNMENT_RESULTS)
+    support.write_mrc(filename_nf, np.stack([n for (n, p) in results], axis=2), pixel_size * 1e10)
+    support.write_mrc(filename_pr, np.stack([p for (n, p) in results], axis=2), pixel_size * 1e10)
 
     # write meta file containing exactly all varied parameters in the simulation
-    # get defocusU defocusV type defocus parameters
-    defocusU, defocusV = convert_defocus_astigmatism_to_defocusU_defocusV(xp.array(dz_series), xp.array(ast_series))
-    metafile                        = xp.zeros(len(angles), dtype=dmf)
+    defocusU, defocusV = microscope.convert_defocus_astigmatism_to_defocusU_defocusV(
+        np.array(dz_series), np.array(ast_series))
+    # forward transformations are saved, for reconstructing need to be inversed
+    metafile                        = np.zeros(len(angles), dtype=support.DATATYPE_METAFILE)
     metafile['DefocusU']            = defocusU * 1e6
     metafile['DefocusV']            = defocusV * 1e6
-    metafile['DefocusAngle']        = xp.array(ast_angle_series)
-    metafile['Voltage']             = xp.array([voltage * 1e-3, ] * len(angles))
-    metafile['SphericalAberration'] = xp.array([spherical_aberration * 1e3, ] * len(angles))
-    metafile['PixelSpacing']        = xp.array([pixel_size * 1e10, ] * len(angles))
-    metafile['TiltAngle']           = xp.array(angles)
-    metafile['InPlaneRotation']     = xp.array(in_plane_rotations)
-    metafile['TranslationX']        = xp.array([x for (x, y, z) in translations])
-    metafile['TranslationY']        = xp.array([y for (x, y, z) in translations])
-    metafile['Magnification']       = xp.array([x for (x, y, z) in magnifications])
+    metafile['DefocusAngle']        = np.array(ast_angle_series)
+    metafile['Voltage']             = np.array([voltage * 1e-3, ] * len(angles))
+    metafile['SphericalAberration'] = np.array([spherical_aberration * 1e3, ] * len(angles))
+    metafile['PixelSpacing']        = np.array([pixel_size * 1e10, ] * len(angles))
+    metafile['TiltAngle']           = np.array(angles)
+    metafile['InPlaneRotation']     = np.array(in_plane_rotations)
+    metafile['TranslationX']        = np.array([x for (x, y, z) in translations])
+    metafile['TranslationY']        = np.array([y for (x, y, z) in translations])
+    metafile['Magnification']       = np.array([x for (x, y, z) in magnifications])
     for i in range(len(angles)):
-        alignment['FileName'][i]    = os.path.join(save_path, 'projections', f'synthetic_{i+1}.mrc')
+        metafile['FileName'][i]     = os.path.join(save_path, 'projections', f'synthetic_{i+1}.mrc')
 
-    savestar(os.path.join(save_path, 'simulation.meta'), metafile, fmt=FMT_METAFILE, header=HEADER_METAFILE)
-
-    # translations, dz_series, ast_series, ast_angle_series
-    # header_varied_params = ''
-    # dt_varied_params = [('TranslationX', 'f4'),
-    #                               ('TranslationY', 'f4'),
-    #                               ('Defocus', 'f4'),
-    #                               ('Astigmatism', 'f4'),
-    #                               ('AstigmatismAngle', 'f4')]
-    # units_varied_params = ['px', 'px', 'um', 'um', 'degrees']
-    #
-    # for n, h in enumerate(dt_varied_params):
-    #     header_varied_params += '{} {}\n'.format(h[0], '({})'.format(units_varied_params[n]) * (
-    #             units_varied_params[n] != ''))
-    #
-    # fmt_varied_params = '%15.10f %15.10f %15.10f %15.10f %15.10f'
-    #
-    # varied_params = xp.zeros(len(angles), dtype=dt_varied_params)
-    # varied_params['TranslationX'] = xp.array([x for (x, y, z) in translations])
-    # varied_params['TranslationY'] = xp.array([y for (x, y, z) in translations])
-    # varied_params['Defocus'] = (xp.array(dz_series) + zheight/2) * 1e6
-    # varied_params['Astigmatism'] = xp.array(ast_series) * 1e6
-    # varied_params['AstigmatismAngle'] = xp.array(ast_angle_series)
-    #
-    # savestar(os.path.join(save_path, 'varied_parameters.txt'), varied_params, fmt=fmt_varied_params,
-    #          header=header_varied_params)
-
-    return
+    support.savestar(os.path.join(save_path, 'simulation.meta'), metafile,
+             fmt=support.FMT_METAFILE, header=support.HEADER_METAFILE)
 
 
 def generate_frame_series_cpu(save_path, n_frames=20, nodes=1, image_size=None, pixel_size=1E-9,
@@ -1370,14 +1298,6 @@ def generate_frame_series_cpu(save_path, n_frames=20, nodes=1, image_size=None, 
 
     @author: Marten Chaillet
     """
-    from pytom.basic.datatypes import DATATYPE_ALIGNMENT_RESULTS as dar
-    from pytom.basic.datatypes import DATATYPE_METAFILE as dmf
-    from pytom.basic.datatypes import fmtAlignmentResults, HEADER_ALIGNMENT_RESULTS, FMT_METAFILE, HEADER_METAFILE
-    from pytom.gui.guiFunctions import savestar
-    from pytom.simulation.microscope import create_detector_response, create_complex_ctf, \
-        convert_defocus_astigmatism_to_defocusU_defocusV
-    from pytom.agnostic.io import read_mrc, write
-    from joblib import Parallel, delayed
 
     # print('this function is not working because it does not create a metafile and does not correctly pass '
     #       'magnification to parallel project')
@@ -1388,26 +1308,26 @@ def generate_frame_series_cpu(save_path, n_frames=20, nodes=1, image_size=None, 
         # grab model
         filename_gm_real = os.path.join(save_path, 'grandmodel.mrc')
         filename_gm_imag = os.path.join(save_path, 'grandmodel_imag.mrc')
-        grandcell = read_mrc(filename_gm_real)
+        grandcell, _ = support.read_mrc(filename_gm_real)
         if absorption_contrast:
             # set dtype to be complex64 to save memory
-            grandcell = grandcell.astype(xp.complex64)
-            grandcell.imag = read_mrc(filename_gm_imag)
+            grandcell = grandcell.astype(np.complex64)
+            grandcell.imag, _ = support.read_mrc(filename_gm_imag)
             # calculate the absorption for amorphous ice at the specified voltage
             solvent_amplitude = physics.potential_amplitude(physics.AMORPHOUS_ICE_DENSITY, physics.WATER_MW, voltage)
             print(f'solvent absorption = {solvent_amplitude:.3f}')
         else:
             # set dtype as float32 to save memory
-            grandcell = grandcell.astype(xp.float32)
+            grandcell = grandcell.astype(np.float32)
             solvent_amplitude = 0.0
     else:
         if grandcell.dtype == complex:
             solvent_amplitude = physics.potential_amplitude(physics.AMORPHOUS_ICE_DENSITY, physics.WATER_MW, voltage)
             # set dtype to be complex64 to save memory
-            grandcell = grandcell.astype(xp.complex64)
+            grandcell = grandcell.astype(np.complex64)
         else:
             # set dtype as float32 to save memory
-            grandcell = grandcell.astype(xp.float32)
+            grandcell = grandcell.astype(np.float32)
 
     # extract size
     box_size = grandcell.shape[0]
@@ -1426,7 +1346,7 @@ def generate_frame_series_cpu(save_path, n_frames=20, nodes=1, image_size=None, 
     # Check if msdz is viable, else correct it
     if msdz % pixel_size != 0:
         # Round the msdz to the closest integer mutltiple of the pixel size
-        round_up = xp.round(msdz % pixel_size / pixel_size)
+        round_up = np.round(msdz % pixel_size / pixel_size)
         if round_up:
             msdz += (pixel_size - msdz % pixel_size)
         else:
@@ -1444,7 +1364,7 @@ def generate_frame_series_cpu(save_path, n_frames=20, nodes=1, image_size=None, 
         print(
             'The multislice steps can not be smaller than the pixel size. Use the pixel size instead for the step size.\n')
     else:
-        n_slices = int(xp.ceil(xp.around(zheight / msdz, 3)))
+        n_slices = int(np.ceil(np.around(zheight / msdz, 3)))
     print('Number of slices for multislice: ', n_slices)
 
     # determine dose per frame
@@ -1454,20 +1374,20 @@ def generate_frame_series_cpu(save_path, n_frames=20, nodes=1, image_size=None, 
     # number of frames. In MotionCorr2 paper accumulated motion for 20S proteasome dataset is 11A across the whole
     # frame series.
     # First generate global motion and global direction of motion.
-    global_motion = xp.random.normal(mean_shift, 3)  # normal around mean 10 A and std 3A
+    global_motion = np.random.normal(mean_shift, 3)  # normal around mean 10 A and std 3A
     average_motion_per_frame = global_motion / n_frames
-    global_angle = xp.random.uniform(0,360)  # random angle from uniform
+    global_angle = np.random.uniform(0, 360)  # random angle from uniform
     translations, cumulative_translations, translations_voxel = [], [], []
     magnifications = []
     in_plane_rotations = []
     x, y = 0, 0
     for i in range(n_frames):
         # randomly vary the motion per frame and angle
-        motion_i = xp.random.normal(average_motion_per_frame, average_motion_per_frame/2)
-        angle_i = xp.random.normal(global_angle, 20)
+        motion_i = np.random.normal(average_motion_per_frame, average_motion_per_frame / 2)
+        angle_i = np.random.normal(global_angle, 20)
         # decompose motion into x and y translation
-        y_i = xp.sin(angle_i * xp.pi / 180) * motion_i
-        x_i = xp.cos(angle_i * xp.pi / 180) * motion_i
+        y_i = np.sin(angle_i * np.pi / 180) * motion_i
+        x_i = np.cos(angle_i * np.pi / 180) * motion_i
         # only seem to need cumulative_translations
         translations.append((x_i, y_i, 0)) # append the translation for the frame as a tuple
         y += y_i
@@ -1476,14 +1396,14 @@ def generate_frame_series_cpu(save_path, n_frames=20, nodes=1, image_size=None, 
         translations_voxel.append((x*1E-10 / pixel_size, y*1E-10 / pixel_size, 0))
 
         # generate random in plane rotation
-        in_plane_rotations.append(xp.random.normal(0, sigma_angle_in_plane_rotation))
+        in_plane_rotations.append(np.random.normal(0, sigma_angle_in_plane_rotation))
 
         # add magnifications
         if sigma_magnification != 0:
             gamma_a = 1. / (sigma_magnification ** 2)  # a = 1 / sigma**2
             gamma_b = 1. / gamma_a  # b = mu / a
             # generate random magnification
-            mag = xp.random.gamma(gamma_a, gamma_b)
+            mag = np.random.gamma(gamma_a, gamma_b)
             magnifications.append((mag, mag, 1.))
         else:
             magnifications.append((1., 1., 1.))
@@ -1501,16 +1421,16 @@ def generate_frame_series_cpu(save_path, n_frames=20, nodes=1, image_size=None, 
     # plt.savefig(f'{save_path}/global_motion.png')
     # plt.close()
 
-    # defocus_series = [xp.random.normal(defocus, 0.2E-6) for a in angles]
+    # defocus_series = [np.random.normal(defocus, 0.2E-6) for a in angles]
     ctf_series = []
     dz_series, ast_series, ast_angle_series = [], [], []
     for x in range(n_frames):
         # todo currently input astigmatism is overriden by these options
         # todo add these options for frame series
-        dz = xp.random.normal(defocus, 0.2e-6)
-        ast = xp.random.normal(astigmatism, 0.1e-6)  # introduce astigmastism with 100 nm variation
-        ast_angle = xp.random.normal(astigmatism_angle, 5)  # vary angle randomly around a 40 degree angle
-        ctf = create_complex_ctf((image_size, image_size), pixel_size, dz, voltage=voltage,
+        dz = np.random.normal(defocus, 0.2e-6)
+        ast = np.random.normal(astigmatism, 0.1e-6)  # introduce astigmastism with 100 nm variation
+        ast_angle = np.random.normal(astigmatism_angle, 5)  # vary angle randomly around a 40 degree angle
+        ctf = microscope.create_complex_ctf((image_size, image_size), pixel_size, dz, voltage=voltage,
                                  Cs=spherical_aberration, Cc=chromatic_aberration, energy_spread=energy_spread,
                                  illumination_aperture=illumination_aperture, objective_diameter=objective_diameter,
                                  focus_length=focus_length, astigmatism=ast,
@@ -1520,9 +1440,9 @@ def generate_frame_series_cpu(save_path, n_frames=20, nodes=1, image_size=None, 
         ast_series.append(ast)
         ast_angle_series.append(ast_angle)
 
-    dqe = create_detector_response(camera_type, 'DQE', image_size, voltage=voltage,
+    dqe = microscope.create_detector_response(camera_type, 'DQE', image_size, voltage=voltage,
                                             folder=camera_folder, oversampling=oversampling)
-    mtf = create_detector_response(camera_type, 'MTF', image_size, voltage=voltage,
+    mtf = microscope.create_detector_response(camera_type, 'MTF', image_size, voltage=voltage,
                                             folder=camera_folder, oversampling=oversampling)
 
     # joblib automatically memory maps a numpy array to child processes
@@ -1549,60 +1469,29 @@ def generate_frame_series_cpu(save_path, n_frames=20, nodes=1, image_size=None, 
     # write (noisefree) projections as mrc stacks
     filename_nf = os.path.join(save_path, 'noisefree_projections.mrc')
     filename_pr = os.path.join(save_path, 'projections.mrc')
-    write(filename_nf, xp.stack([n for (n,p) in results], axis=2))
-    write(filename_pr, xp.stack([p for (n, p) in results], axis=2))
-
-    # todo create alignment and misalignment file, in reconstruction choice for alignment and misalignment
-    # store alignment information
-    # len(angles) is the number of files that we have
-    alignment = xp.zeros(n_frames, dtype=dar)
-    # IMPORTANT: get the inverse of each parameter for correct reconstruction
-    alignment['TiltAngle'] = xp.array([.0] * n_frames)
-    alignment['Magnification'] = 1. / xp.array([x for (x, y, z) in magnifications])
-    alignment['AlignmentTransX'] = -1 * xp.array([x for (x, y, z) in translations_voxel])
-    alignment['AlignmentTransY'] = -1 * xp.array([y for (x, y, z) in translations_voxel])
-    alignment['InPlaneRotation'] = -1 * xp.array(in_plane_rotations)
-    for i in range(n_frames):
-        alignment['FileName'][i] = os.path.join(save_path, 'projections', f'synthetic_{i+1}.mrc')
-
-    # write the alignment file
-    filename_align = os.path.join(save_path, 'alignment_simulated.txt')
-    savestar(filename_align, alignment, fmt=fmtAlignmentResults, header=HEADER_ALIGNMENT_RESULTS)
+    support.write_mrc(filename_nf, np.stack([n for (n, p) in results], axis=2), pixel_size * 1e10)
+    support.write_mrc(filename_pr, np.stack([p for (n, p) in results], axis=2), pixel_size * 1e10)
 
     # write meta file containing exactly all varied parameters in the simulation
-    # get defocusU defocusV type defocus parameters
-    defocusU, defocusV = convert_defocus_astigmatism_to_defocusU_defocusV(xp.array(dz_series), xp.array(ast_series))
-    metafile = xp.zeros(n_frames, dtype=dmf)
+    defocusU, defocusV = microscope.convert_defocus_astigmatism_to_defocusU_defocusV(
+        np.array(dz_series), np.array(ast_series))
+    metafile = np.zeros(n_frames, dtype=support.DATATYPE_METAFILE)
     metafile['DefocusU'] = defocusU * 1e6
     metafile['DefocusV'] = defocusV * 1e6
-    metafile['DefocusAngle'] = xp.array(ast_angle_series)
-    metafile['Voltage'] = xp.array([voltage * 1e-3, ] * n_frames)
-    metafile['SphericalAberration'] = xp.array([spherical_aberration * 1e3, ] * n_frames)
-    metafile['PixelSpacing'] = xp.array([pixel_size * 1e10, ] * n_frames)
-    metafile['TiltAngle'] = xp.array([.0] * n_frames)
-    metafile['InPlaneRotation'] = xp.array(in_plane_rotations)
-    metafile['TranslationX'] = xp.array([x for (x, y, z) in translations_voxel])
-    metafile['TranslationY'] = xp.array([y for (x, y, z) in translations_voxel])
-    metafile['Magnification'] = xp.array([x for (x, y, z) in magnifications])
+    metafile['DefocusAngle'] = np.array(ast_angle_series)
+    metafile['Voltage'] = np.array([voltage * 1e-3, ] * n_frames)
+    metafile['SphericalAberration'] = np.array([spherical_aberration * 1e3, ] * n_frames)
+    metafile['PixelSpacing'] = np.array([pixel_size * 1e10, ] * n_frames)
+    metafile['TiltAngle'] = np.array([.0] * n_frames)
+    metafile['InPlaneRotation'] = np.array(in_plane_rotations)
+    metafile['TranslationX'] = np.array([x for (x, y, z) in translations_voxel])
+    metafile['TranslationY'] = np.array([y for (x, y, z) in translations_voxel])
+    metafile['Magnification'] = np.array([x for (x, y, z) in magnifications])
     for i in range(n_frames):
-        alignment['FileName'][i] = os.path.join(save_path, 'projections', f'synthetic_{i+1}.mrc')
+        metafile['FileName'][i] = os.path.join(save_path, 'projections', f'synthetic_{i+1}.mrc')
 
-    savestar(os.path.join(save_path, 'simulation.meta'), metafile, fmt=FMT_METAFILE, header=HEADER_METAFILE)
-
-    # # Store translations as reference for model
-    # # len(angles) is the number of files that we have
-    # alignment                       = xp.zeros(n_frames, dtype=dar)
-    # alignment['AlignmentTransX']    = xp.array([x for (x,y,z) in cumulative_translations])
-    # alignment['AlignmentTransY']    = xp.array([y for (x,y,z) in cumulative_translations])
-    # alignment['Magnification']      = xp.repeat(1.0, n_frames)
-    # for i in range(n_frames):
-    #     alignment['FileName'][i]    = os.path.join(save_path, 'projections', f'synthetic_{i+1}.mrc')
-    #
-    # # Write the alignment file as a text file
-    # filename_align                      = os.path.join(save_path, 'alignment_simulated.txt')
-    # savestar(filename_align, alignment, fmt=fmtAlignmentResults, header=HEADER_ALIGNMENT_RESULTS)
-
-    return
+    support.savestar(os.path.join(save_path, 'simulation.meta'), metafile,
+             fmt=support.FMT_METAFILE, header=support.HEADER_METAFILE)
 
 
 def FSS(fimage1, fimage2, numberBands, verbose=False):
@@ -1626,9 +1515,6 @@ def FSS(fimage1, fimage2, numberBands, verbose=False):
 
     @author: Marten Chaillet
     """
-    from pytom.agnostic.correlation import meanUnderMask
-    from pytom.simulation.support import bandpass_mask
-
     assert fimage1.shape == fimage2.shape, "volumes not of same size"
     assert len(set(fimage1.shape)) == 1, "volumes are not perfect cubes"
 
@@ -1638,7 +1524,7 @@ def FSS(fimage1, fimage2, numberBands, verbose=False):
     increment = int(fimage1.shape[0] / 2 * 1 / numberBands)
     band = [-1, -1]
 
-    output = xp.zeros(fimage1.shape)
+    output = np.zeros(fimage1.shape)
 
     for i in range(0, fimage1.shape[0] // 2, increment):
 
@@ -1649,10 +1535,10 @@ def FSS(fimage1, fimage2, numberBands, verbose=False):
             print('Band : ', band)
 
         if band[1] >= fimage1.shape[0] // 2:
-            bandpass = bandpass_mask(fimage1.shape, 0, high=band[0])
+            bandpass = support.bandpass_mask(fimage1.shape, 0, high=band[0])
             bandpass = (bandpass == 0) * 1
         else:
-            bandpass = bandpass_mask(fimage1.shape, band[0], band[1])
+            bandpass = support.bandpass_mask(fimage1.shape, band[0], band[1])
 
         if i == 0:
             # remove center point from mask
@@ -1661,10 +1547,9 @@ def FSS(fimage1, fimage2, numberBands, verbose=False):
             # scale center separately as center adjustment has large influence on the image
             output[c, c] = fimage1[c, c] / (fimage1[c, c] / fimage2[c, c])
 
-        n = bandpass.sum()
         # get mean amplitude of each band
-        m1 = meanUnderMask(fimage1, bandpass, p=n)
-        m2 = meanUnderMask(fimage2, bandpass, p=n)
+        m1 = support.mean_under_mask(fimage1, bandpass)
+        m2 = support.mean_under_mask(fimage2, bandpass)
 
         # scale the values inside the band of volume1
         outband = fimage1 * bandpass / (m1 / m2)
@@ -1697,10 +1582,10 @@ def scale_image(image1, image2, numberBands):
     assert len(set(image1.shape)) == 1, "volumes are not perfect cubes"
 
     # scale the amplitudes of 1 to those of 2 using fourier shells
-    scaled_amp = FSS(xp.abs(xp.fft.fftshift(xp.fft.fftn(image1))), xp.abs(xp.fft.fftshift(xp.fft.fftn(image2))),
+    scaled_amp = FSS(np.abs(np.fft.fftshift(np.fft.fftn(image1))), np.abs(np.fft.fftshift(np.fft.fftn(image2))),
                      numberBands, verbose=False)
     # construct the output volume with the scaled amplitudes and phase infomation of volume 1
-    fout = xp.fft.ifftn(xp.fft.ifftshift(scaled_amp) * xp.exp(1j * xp.angle(xp.fft.fftn(image1))))
+    fout = np.fft.ifftn(np.fft.ifftshift(scaled_amp) * np.exp(1j * np.angle(np.fft.fftn(image1))))
 
     return fout.real
 
@@ -1730,16 +1615,13 @@ def parallel_scale(number, projection, example, pixel_size, example_pixel_size, 
 
     @author: Marten Chaillet
     """
-    from pytom.agnostic.transform import resize
-
-    # print(projection.shape, example.shape)
 
     print(f' -- scaling projection {number+1}')
     if pixel_size != (example_pixel_size * oversampling):
         # magnify or de-magnify if the pixel size does not match yet
         print('(de)magnifying pixel size')
-        example = resize(example, (example_pixel_size * oversampling) / pixel_size, interpolation='Spline').squeeze()
-        #todo squeeze() can be removed after updating pytom
+        # use zoom to make pixel size match exactly
+        example = ndimage.zoom(example, (example_pixel_size * oversampling) / pixel_size, order=3)
 
     # prevent issues later on with oversampling in case experimental and simulated pixel size do not match
     if example.shape[0] % (2*make_even_factor):
@@ -1790,27 +1672,23 @@ def scale_projections(save_path, pixel_size, example_folder, example_pixel_size,
 
     @author: Marten Chaillet
     """
-    from pytom.agnostic.transform import resize
-    from pytom.simulation.support import reduce_resolution_fourier
-    from pytom.agnostic.io import read_mrc, write
-    from joblib import Parallel, delayed
 
     # generate list of all the possible example projections in the provided parameter example_folder
     files = [f for f in os.listdir(example_folder) if os.path.isfile(os.path.join(example_folder, f))]
-    random_file = xp.random.randint(0, len(files))
+    random_file = np.random.randint(0, len(files))
     print(f'Selected {files[random_file]} for experimental amplitude scaling.')
 
     filename_pr = os.path.join(save_path, 'projections.mrc')
     filename_ex = os.path.join(example_folder, files[random_file])
-    projections         = read_mrc(filename_pr)
-    example_projections = read_mrc(filename_ex)
+    projections, _         = support.read_mrc(filename_pr)
+    example_projections, _ = support.read_mrc(filename_ex)
 
     # assert projections.shape[2] == example_projections.shape[2], 'not enough or too many example projections'
     sim_size = projections.shape
     exp_size = example_projections.shape
     if sim_size[2] > exp_size[2]:  # make sure number of projection angles match
         diff = sim_size[2] - exp_size[2]
-        new = xp.zeros((exp_size[0], exp_size[1], sim_size[2]))
+        new = np.zeros((exp_size[0], exp_size[1], sim_size[2]))
         new[..., diff//2: - (diff//2+diff%2)] = example_projections
         new[..., :diff//2] = example_projections[..., :diff//2]
         new[..., -(diff//2+diff%2):] = example_projections[..., -(diff//2+diff%2):]
@@ -1825,11 +1703,11 @@ def scale_projections(save_path, pixel_size, example_folder, example_pixel_size,
     verbosity = 55  # set to 55 for debugging, 11 to see progress, 0 to turn off output
     results = Parallel(n_jobs=nodes, verbose=verbosity, prefer="threads") \
         (delayed(parallel_scale)(i, projections[:, :, i].squeeze(),
-                                 resize(reduce_resolution_fourier(example_projections[:, :, i], 1, 2*oversampling),
-                                        1/oversampling, interpolation='Spline').squeeze(),
+                                 ndimage.zoom(support.reduce_resolution_fourier(
+                                     example_projections[:, :, i], 1, 2*oversampling),
+                                              1 / oversampling, order=3),
                                  pixel_size, example_pixel_size, oversampling, make_even_factor)
          for i in range(projections.shape[2]))
-    # todo squeeze() can be removed after updating pytom
 
     sys.stdout.flush()
 
@@ -1838,15 +1716,13 @@ def scale_projections(save_path, pixel_size, example_folder, example_pixel_size,
     else:
         print(f'{results.count(None)} scaling processes did not finish successfully')
 
-    new_projections = xp.dstack(tuple([r for (i,r) in results]))
+    new_projections = np.dstack(tuple([r for (i, r) in results]))
 
     filename_scaled = os.path.join(save_path, 'projections_scaled.mrc')
-    write(filename_scaled, new_projections)
-
-    return
+    support.write_mrc(filename_scaled, new_projections, pixel_size)
 
 
-def reconstruct_tomogram(save_path, weighting=-1, reconstruction_bin=1,
+def reconstruct_tomogram(save_path, tilt_angles, weighting=-1, reconstruction_bin=1,
                          filter_projections=False, use_scaled_projections=False):
     """
     Reconstruction of simulated tilt series into a tomogram. Uses weighted backprojection to make a reconstruction with
@@ -1880,18 +1756,69 @@ def reconstruct_tomogram(save_path, weighting=-1, reconstruction_bin=1,
     from pytom.simulation.support import reduce_resolution_real
     from pytom.agnostic.io import read_mrc, write
 
+    # TODO add tomogram reconstruction code
+    # TODO first transform all the projections with alignment params and downsample
+    # TODO send to interpolate.back_project()
+
+    metadata = support.loadstar(os.path.join(save_path, 'simulation.meta'), dtype=support.DATATYPE_METAFILE)
+
     # create folder for individual projections, reconstruction algorithm reads single projections from a folder
-    projection_folder = os.path.join(save_path, 'projections')
-    if not os.path.exists(projection_folder):
-        os.mkdir(projection_folder)
+    # projection_folder = os.path.join(save_path, 'projections')
+    # if not os.path.exists(projection_folder):
+    #     os.mkdir(projection_folder)
 
     # select which projections to use, scaled or original
     if use_scaled_projections:
         filename_sc = os.path.join(save_path, 'projections_scaled.mrc')
-        projections = read_mrc(filename_sc)
+        projections, _ = support.read_mrc(filename_sc)
     else:
         filename_pr = os.path.join(save_path, 'projections.mrc')
-        projections = read_mrc(filename_pr)
+        projections, _ = support.read_mrc(filename_pr)
+
+    ice_height = get from grandmodel
+
+    edge_taper, weighting = None, None  # initialize empty
+    reconstruction = np.zeros((projections.shape[0] // reconstruction_bin,
+                               projections.shape[1] // reconstruction_bin,
+                               ice_height), dtype=np.float32)
+    recon_position = (0,0,0)
+
+    for i, meta in enumerate(metadata):
+
+        if reconstruction_bin > 1:
+            p = ndimage.zoom(projections[:, :, i], 1 / reconstruction_bin, order=3)  # downsample for speed-up
+        else:
+            p = projections[:, :, i]
+
+        if edge_taper is None:  # create in first loop iter after rescaled shape is known
+            edge_taper = support.taper_mask(p.shape, p.shape[0] // 30)
+        if weighting is None:
+            weighting = support.ramp_filter(p.shape) * support.create_circle(p.shape, 0.9 * p.shape[0],
+                                                                             sigma=0.015 * p.shape[0])
+
+        # normalize image
+        p = (p - p.mean()) / p.mean()
+
+        # taper edges
+        p *= edge_taper
+
+        # inverse the transformations to correct for them
+        rot, x_shift, y_shift, mag = -meta['InPlaneRotation'], -meta['TranslationX'] / reconstruction_bin, \
+                                     -meta['TranslationY'] / reconstruction_bin, 1. / meta['Magnification']
+        mtx = vt.utils.transform_matrix(rotation=(rot, 0, 0), rotation_order='rzxz', scale=(mag, mag, mag),
+                                        translation=(x_shift, y_shift, 0), center=((p.shape[0] - 1) / 2,
+                                                                                   (p.shape[1] - 1) / 2, 0))
+        mtx_2d = np.append(mtx[:2, :2], mtx[3, :2][:, np.newaxis], axis=1)
+
+        # align the image
+        aligned = ndimage.affine_transform(p, mtx_2d, output_shape=p.shape, order=3) * edge_taper
+
+        # filter image in fourier space
+        aligned = support.apply_fourier_filter(aligned, weighting, human=True)
+
+        # back project image into reconstruction volume
+        interpolate.back_project(reconstruction, aligned, recon_position)
+
 
     # possibly apply low pass filter, before storing as single projections to reconstruction folder
     if filter_projections:
@@ -1907,7 +1834,7 @@ def reconstruct_tomogram(save_path, weighting=-1, reconstruction_bin=1,
 
     # size and volume shape of the reconstruction
     size_reconstruction = projections.shape[0] // reconstruction_bin
-    vol_size = [size_reconstruction, ] * 3
+    vol_size = [size_reconstruction, ] * 3  # z should be the size of the grandmodel to match ground truth
     # alignment file name for reconstruction
     filename_align = os.path.join(save_path, 'alignment_simulated.txt')
 
@@ -1972,8 +1899,6 @@ def reconstruct_tomogram(save_path, weighting=-1, reconstruction_bin=1,
                 line = fin.readline()
         with open(filename_loc_bin, 'w') as fout:
             fout.write(adjusted_ground_truth)
-
-    return
 
 
 if __name__ == '__main__':
@@ -2146,7 +2071,7 @@ if __name__ == '__main__':
     # ----------------------------------------Execute simulation--------------------------------------------------------
     if 'GenerateModel' in config.sections():
         # set seed for random number generation
-        xp.random.seed(seed)
+        np.random.seed(seed)
         random.seed(seed)
 
         print('\n- Generating grand model')
@@ -2166,7 +2091,7 @@ if __name__ == '__main__':
 
     if simulator_mode in config.sections() and simulator_mode == 'TiltSeries':
         # set seed for random number generation
-        xp.random.seed(seed)
+        np.random.seed(seed)
         random.seed(seed)
         # Grab the ice thickness from the initial model in case program is only executed for projections
         print('\n- Generating projections')
@@ -2202,7 +2127,7 @@ if __name__ == '__main__':
             print('Invalid device type.')
             sys.exit(0)
     elif simulator_mode in config.sections() and simulator_mode == 'FrameSeries':
-        xp.random.seed(seed)
+        np.random.seed(seed)
         random.seed(seed)
         print('\n- Generate frame series projections')
         if device == 'CPU':
@@ -2239,7 +2164,7 @@ if __name__ == '__main__':
 
     if 'ScaleProjections' in config.sections():
         # set seed for random number generation
-        xp.random.seed(seed)
+        np.random.seed(seed)
         random.seed(seed)
         print('\n- Scaling projections with experimental data')
         scale_projections(save_path, pixel_size * 1E10, example_folder,

@@ -4,6 +4,56 @@ import utils
 import mrcfile
 
 
+DATATYPE_METAFILE = [('DefocusU', 'f4'),
+                     ('DefocusV', 'f4'),
+                     ('DefocusAngle', 'f4'),
+                     ('Voltage', 'i4'),
+                     ('SphericalAberration', 'f4'),
+                     ('AmplitudeContrast', 'f4'),
+                     ('PhaseShift', 'f4'),
+                     ('PixelSpacing', 'f4'),
+                     ('MarkerDiameter', 'i4'),
+                     ('TiltAngle', 'f4'),
+                     ('RotationTheta', 'f4'),
+                     ('InPlaneRotation', 'f4'),
+                     ('TranslationX', 'f4'),
+                     ('TranslationY', 'f4'),
+                     ('TranslationZ', 'f4'),
+                     ('Magnification', 'f4'),
+                     ('Intensity', 'f4'),
+                     ('ImageSize', 'i4'),
+                     ('AcquisitionOrder', 'i4'),
+                     ('FileName', 'U1000')]
+HEADER_METAFILE = ''
+unitsMetaFile = ['um', 'um', 'deg', 'kV', 'mm', '', 'deg', 'A', 'A', 'deg',
+                 'deg', 'deg', 'px', 'px', 'px', '', '', 'px', '', '']
+FMT_METAFILE = '%11.6f %11.6f %6.2f %4d %6.2f %4.2f %11.6f %11.6f %4d ' \
+               '%7.3f %7.3f %7.3f %6.2f %6.2f %6.2f %5.3f %5.3f %4d %3d %s'
+
+for n, h in enumerate(DATATYPE_METAFILE):
+    HEADER_METAFILE += '{} {}\n'.format(h[0], '({})'.format(unitsMetaFile[n])*(unitsMetaFile[n] != ''))
+
+
+def isheaderline(line):
+    if line.startswith('data_') or line.startswith('loop_') or line.startswith('_') or line.startswith('#'):
+        return True
+    else:
+        return False
+
+
+def loadstar(filename, dtype='float32', usecols=None, skip_header=0, max_rows=None):
+    # for dtype use DATATYPE_METAFILE to load a .meta file
+    with open(filename, 'r') as f:
+        stop = 1E9 if max_rows is None else max_rows
+        lines = [line for n, line in enumerate(f) if not isheaderline(line) and stop > n >= skip_header]
+        arr = np.genfromtxt(lines, dtype=dtype, usecols=usecols, max_rows=max_rows)
+    return arr
+
+
+def savestar(filename, arr, header='', fmt='', comments='#'):
+    np.savetxt(filename, arr, comments=comments, header=header, fmt=fmt)
+
+
 def read_mrc(filename):
     with mrcfile.open(filename) as mrc:
         data = mrc.data.T  # transpose because I use x y z indexing
@@ -63,7 +113,7 @@ def create_gaussian_low_pass(shape, spacing, resolution, reduced=False, device='
 
 def apply_fourier_filter(data, filter, human=True):
     """
-     @param human: whether the filter is in human understandable form, i.e. zero frequency in size // 2 center
+    @param human: whether the filter is in human understandable form, i.e. zero frequency in size // 2 center
     """
     xp, _, _ = utils.get_array_module(data)
 
@@ -302,6 +352,20 @@ def bandpass_mask(shape, low=0, high=-1, device='cpu'):
     return mask
 
 
+def mean_under_mask(volume, mask):
+    """
+    Determines the mean value under a mask
+    @param volume: The volume
+    @type volume:  L{np.ndarray}
+    @param mask:  The mask
+    @type mask:  L{np.ndarray}
+
+    @return: A scalar
+    @rtype: L{float}
+    """
+    return (volume * mask).sum() / mask.sum()
+
+
 def bin_volume(potential, factor):
     """
     Bin the data volume (potential) factor times.
@@ -395,3 +459,47 @@ def paste_in_center(volume, volume2):
         SX, SY = volume2.shape
         volume2[SX//2-sx//2:SX//2+sx//2+sx%2,SY//2-sy//2:SY//2+sy//2+sy%2] = volume
         return volume2
+
+
+def ramp_filter(size, device='cpu'):
+    """
+    rampFilter: Generates the weighting function required for weighted backprojection - y-axis is tilt axis
+    @param size: tuple of ints (x, y)
+    @param device: cpu or gpu
+    @return: filter volume
+    """
+    xp, _ = utils.get_array_module_from_device(device)
+
+    # maximum frequency
+    crowther = size[0] // 2
+
+    # create a line increasing from center 0 to edge 1
+    ramp_line = xp.abs(xp.arange(-size[0]//2, size[0]//2)) / crowther
+
+    # 1 should be max
+    ramp_line[ramp_line > 1] = 1
+
+    # extend in y
+    return xp.column_stack([ramp_line, ] * size[1])
+
+
+def taper_mask(size, width, device='cpu'):
+    """
+    taper edges of image (or volume) with cos function
+    @param size: shape as tuple of two ints (x, y)
+    @param width: width of edge
+    @param device: cpu or gpu
+    @return: taper mask
+    """
+    xp, _ = utils.get_array_module_from_device(device)
+
+    width = int(round(width))
+    val = xp.cos(xp.arange(1, width + 1) * xp.pi / (2. * width))
+    taper_x = xp.ones((size[0]), dtype=xp.float32)
+    taper_y = xp.ones((size[1]))
+    taper_x[:width] = val[::-1]
+    taper_x[-width:] = val
+    taper_y[:width] = val[::-1]
+    taper_y[-width:] = val
+    x, y = xp.meshgrid(taper_y, taper_x)
+    return x * (x < y) + y * (y <= x)

@@ -13,7 +13,7 @@ def convert_defocus_astigmatism_to_defocusU_defocusV(defocus, astigmatism):
     return defocus + astigmatism, defocus - astigmatism
 
 
-# TODO make this a GPU kernel / numba function as xp.meshgrid has a lot of memory overhead
+# TODO make this a GPU kernel / numba function as np.meshgrid has a lot of memory overhead
 def fourier_grids(shape, nyquist, indexing='ij', reduced=False, device='cpu'):
     """
     Generate a fourier space frequency array where values range from -nyquist to +nyquist, with the center equal
@@ -39,7 +39,7 @@ def fourier_grids(shape, nyquist, indexing='ij', reduced=False, device='cpu'):
 
     assert 1 <= len(shape) <= 3, print('invalid argument for number of dimensions of fourier array')
 
-    # xp.arange(-1, 1, 998) returns an array of length 999, expression xp.arange(size) / (size/2) - 1 solves this
+    # np.arange(-1, 1, 998) returns an array of length 999, expression np.arange(size) / (size/2) - 1 solves this
     if reduced:
         d = []
         for i, size in enumerate(shape):
@@ -195,7 +195,7 @@ def fit_sinc_square(xdata, ydata):
     # matplotlib.use('Qt5Agg')
     # import matplotlib.pyplot as plt
     #
-    # xaxis = xp.linspace(0,1,100) # we can plot with xdata, but fit will not look good
+    # xaxis = np.linspace(0,1,100) # we can plot with xdata, but fit will not look good
     # curve_y = sinc_square(xaxis,p1,p2,p3,p4)
     # plt.plot(xdata,ydata,'*')
     # plt.plot(xaxis,curve_y,'-')
@@ -351,8 +351,8 @@ def create_detector_response(detector, response_function, image_size, voltage=30
     sampling_image_size = image_size * oversampling
     # fraction of nyquist maximum
     # Ny = 1
-    # R, Y = xp.meshgrid(xp.arange(-Ny, Ny, 2. * Ny / (shape[0])), xp.arange(-Ny, Ny, 2. * Ny / (shape[1])))
-    # r = xp.sqrt(R ** 2 + Y ** 2)
+    # R, Y = np.meshgrid(np.arange(-Ny, Ny, 2. * Ny / (shape[0])), np.arange(-Ny, Ny, 2. * Ny / (shape[1])))
+    # r = np.sqrt(R ** 2 + Y ** 2)
     # r = fourier_array(sampling_image_size, 2, 1)
 
     grids = fourier_grids((sampling_image_size,)*2, 1, device=device)  # nyquist is 1, as the fraction of nyquist
@@ -473,10 +473,10 @@ def create_ctf_1d(size, spacing, defocus, amplitude_contrast=0.07, voltage=300e3
     acurve = - amplitude_contrast * xp.cos(chi)
     pcurve = - xp.sqrt(1. - amplitude_contrast ** 2) * xp.sin(chi)
 
-    # chi = xp.pi * (0.5 * Cs * lmbd ** 3 * k2 ** 2 + lmbd * defocus * k2) #- phase_shift_rad
+    # chi = np.pi * (0.5 * Cs * lmbd ** 3 * k2 ** 2 + lmbd * defocus * k2) #- phase_shift_rad
     #
-    # acurve = - amplitude_contrast * xp.cos(chi)
-    # pcurve = xp.sqrt(1. - amplitude_contrast ** 2) * xp.sin(chi)
+    # acurve = - amplitude_contrast * np.cos(chi)
+    # pcurve = np.sqrt(1. - amplitude_contrast ** 2) * np.sin(chi)
 
     bfactor = xp.exp(-bfactor * k2 * 0.25)
 
@@ -552,8 +552,8 @@ def create_ctf(shape, spacing, defocusU, amplitude_contrast, voltage, Cs, sigma_
     chi += (phase_shift_rad + tan_term)
     # determine the ctf
     ctf = - xp.sin(chi)
-    # ctf = - xp.sqrt(1. - amplitude_contrast ** 2) * xp.sin(chi + phase_shift_rad) - \
-    #       amplitude_contrast * xp.cos(chi + phase_shift_rad)
+    # ctf = - np.sqrt(1. - amplitude_contrast ** 2) * np.sin(chi + phase_shift_rad) - \
+    #       amplitude_contrast * np.cos(chi + phase_shift_rad)
 
     if sigma_decay > 0:
         decay = xp.exp(-(k / (sigma_decay * nyquist)) ** 2)

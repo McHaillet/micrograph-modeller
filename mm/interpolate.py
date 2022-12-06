@@ -1,8 +1,43 @@
 from numba import njit, prange
+import numpy as np
 
 
-def back_project():
-    pass
+@njit(parallel=True)
+def back_project(volume, projection, recon_position, tilt_angle):
+
+    dims = volume.shape
+    dims_proj = projection.shape
+
+    center_recon = ((dims[0] // 2 + 1) - recon_position[0],
+                    (dims[1] // 2 + 1) - recon_position[1],
+                    (dims[2] // 2 + 1) - recon_position[2])
+
+    center_proj = ((dims_proj[0] // 2 + 1), (dims_proj[1] // 2 + 1))
+
+    tr11 = np.cos(tilt_angle) * np.cos(0) * np.cos(0) - np.sin(0) * np.sin(0)
+    tr21 = np.cos(tilt_angle) * np.sin(0) * np.cos(0) + np.cos(0) * np.sin(0)
+    tr31 = -np.sin(tilt_angle) * np.cos(0)
+    tr12 = -np.cos(tilt_angle) * np.cos(0) * np.sin(0) - np.sin(0) * np.cos(0)
+    tr22 = -np.cos(tilt_angle) * np.sin(0) * np.sin(0) + np.cos(0) * np.cos(0)
+    tr32 = np.sin(tilt_angle) * np.sin(0)
+
+    for i in prange(dims[0]):
+        for j in range(dims[1]):
+            for k in range(dims[2]):
+                x, y, z = i - center_recon[0] + 1, j - center_recon[1] + 1, k - center_recon[2] + 1
+
+                ix = tr11 * x + tr21 * y + tr31 * z + center_proj[0]
+                iy = tr12 * x + tr22 * y + tr32 * z + center_proj[1]
+
+                px, py = int(ix), int(iy)
+                xoff, yoff = ix - px, iy - py
+
+                if 1 <= px < dims_proj[0] and 1 <= py < dims_proj[1]:
+                    v1 = projection[px - 1, py - 1] + (projection[px, py - 1] - projection[px - 1, py - 1]) * xoff
+                    v2 = projection[px - 1, py] + (projection[px, py] - projection[px - 1, py]) * xoff
+                    v3 = v1 + (v2 - v1) * yoff
+
+                    volume[x, y, z] += v3
 
 
 @njit(parallel=True)

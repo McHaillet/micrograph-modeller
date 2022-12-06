@@ -12,6 +12,7 @@ import logging
 import os
 import datetime
 import sys
+import mrcfile
 from tqdm import tqdm
 from joblib import Parallel, delayed
 
@@ -24,12 +25,6 @@ import physics
 import support
 import microscope
 import interpolate
-
-
-# Plotting, use Qt5Agg to prevent conflict with tkinter in pylab on cluster
-# import matplotlib
-# matplotlib.use('Qt5Agg')
-# import matplotlib.pylab as plt
 
 
 class ConfigLogger(object):
@@ -968,7 +963,7 @@ def generate_tilt_series_cpu(save_path,
     @param image_size: number of pixels on x and y dimension
     @type  image_size: L{int}
     @param rotation_box_height: specify box height to rotate model in, if none given box height will be adjusted to encompass grandmodel at highest tilt angle
-    @type  rotation_box_height: L{int}
+    @type  rotation_box_height: L{Union(None, int)}
     @param pixel_size: pixel size in m, default 1e-9 (i.e. 1 nm)
     @type  pixel_size: L{float}
     @param oversampling: number of times pixel size is binned for dose, mtf, and dqe correction
@@ -1722,8 +1717,8 @@ def scale_projections(save_path, pixel_size, example_folder, example_pixel_size,
     support.write_mrc(filename_scaled, new_projections, pixel_size)
 
 
-def reconstruct_tomogram(save_path, tilt_angles, weighting=-1, reconstruction_bin=1,
-                         filter_projections=False, use_scaled_projections=False):
+def reconstruct_tomogram(save_path, tilt_angles, binning=1,
+                         use_scaled_projections=False, align_projections=False):
     """
     Reconstruction of simulated tilt series into a tomogram. Uses weighted backprojection to make a reconstruction with
     -1, 0, or 1 as a weighting option. -1 is ramp weighting, 0 is no weighting, and 1 is exact weighting.
@@ -1739,8 +1734,8 @@ def reconstruct_tomogram(save_path, tilt_angles, weighting=-1, reconstruction_bi
     @type  save_path: L{str}
     @param weighting: type of weighting for WBP (-1, 0, or 1)
     @type  weighting: L{int}
-    @param reconstruction_bin: number of times reconstruction should be binned
-    @type  reconstruction_bin: L{int}
+    @param binning: number of times reconstruction should be binned
+    @type  binning: L{int}
     @param filter_projections: flag for low-pass filtering images lightly (0.9 width in fourier space)
     @type  filter_projections: L{bool}
     @param use_scaled_projections: flag to reconstruct projections that have amplitude scaled to experimental images
@@ -1751,21 +1746,7 @@ def reconstruct_tomogram(save_path, tilt_angles, weighting=-1, reconstruction_bi
 
     @author: Gijs van der Schot, Marten Chaillet
     """
-    from pytom.reconstruction.reconstructionStructures import Projection, ProjectionList
-    from pytom.agnostic.transform import resize
-    from pytom.simulation.support import reduce_resolution_real
-    from pytom.agnostic.io import read_mrc, write
-
-    # TODO add tomogram reconstruction code
-    # TODO first transform all the projections with alignment params and downsample
-    # TODO send to interpolate.back_project()
-
     metadata = support.loadstar(os.path.join(save_path, 'simulation.meta'), dtype=support.DATATYPE_METAFILE)
-
-    # create folder for individual projections, reconstruction algorithm reads single projections from a folder
-    # projection_folder = os.path.join(save_path, 'projections')
-    # if not os.path.exists(projection_folder):
-    #     os.mkdir(projection_folder)
 
     # select which projections to use, scaled or original
     if use_scaled_projections:
@@ -1775,18 +1756,20 @@ def reconstruct_tomogram(save_path, tilt_angles, weighting=-1, reconstruction_bi
         filename_pr = os.path.join(save_path, 'projections.mrc')
         projections, _ = support.read_mrc(filename_pr)
 
-    ice_height = get from grandmodel
-
+    with mrcfile.mmap(os.path.join(save_path, 'grandmodel.mrc')) as mrc:
+        ice_height = mrc.header['nz']  # get z height of grandmodel
+        voxel_size = mrc.voxel_size
+    recon_size = projections.shape[0] // binning
+    reconstruction = np.zeros((recon_size,
+                               recon_size,
+                               ice_height // binning), dtype=np.float32)
     edge_taper, weighting = None, None  # initialize empty
-    reconstruction = np.zeros((projections.shape[0] // reconstruction_bin,
-                               projections.shape[1] // reconstruction_bin,
-                               ice_height), dtype=np.float32)
-    recon_position = (0,0,0)
+    recon_position = (0, 0, 0)
 
-    for i, meta in enumerate(metadata):
+    for i, (tilt_angle, meta) in enumerate(zip(tilt_angles, metadata)):
 
-        if reconstruction_bin > 1:
-            p = ndimage.zoom(projections[:, :, i], 1 / reconstruction_bin, order=3)  # downsample for speed-up
+        if binning > 1:
+            p = ndimage.zoom(projections[:, :, i], 1 / binning, order=3)  # downsample for speed-up
         else:
             p = projections[:, :, i]
 
@@ -1802,58 +1785,35 @@ def reconstruct_tomogram(save_path, tilt_angles, weighting=-1, reconstruction_bi
         # taper edges
         p *= edge_taper
 
-        # inverse the transformations to correct for them
-        rot, x_shift, y_shift, mag = -meta['InPlaneRotation'], -meta['TranslationX'] / reconstruction_bin, \
-                                     -meta['TranslationY'] / reconstruction_bin, 1. / meta['Magnification']
-        mtx = vt.utils.transform_matrix(rotation=(rot, 0, 0), rotation_order='rzxz', scale=(mag, mag, mag),
-                                        translation=(x_shift, y_shift, 0), center=((p.shape[0] - 1) / 2,
-                                                                                   (p.shape[1] - 1) / 2, 0))
-        mtx_2d = np.append(mtx[:2, :2], mtx[3, :2][:, np.newaxis], axis=1)
+        if align_projections:
+            # inverse the transformations to correct for them
+            rot, x_shift, y_shift, mag = -meta['InPlaneRotation'], -meta['TranslationX'] / binning, \
+                                         -meta['TranslationY'] / binning, 1. / meta['Magnification']
+            mtx = vt.utils.transform_matrix(rotation=(rot, 0, 0), rotation_order='rzxz', scale=(mag, mag, mag),
+                                            translation=(x_shift, y_shift, 0), center=((p.shape[0] - 1) / 2,
+                                                                                       (p.shape[1] - 1) / 2, 0))
+            mtx_2d = np.append(mtx[:2, :2], mtx[3, :2][:, np.newaxis], axis=1)
 
-        # align the image
-        aligned = ndimage.affine_transform(p, mtx_2d, output_shape=p.shape, order=3) * edge_taper
+            # align the image
+            p = ndimage.affine_transform(p, mtx_2d, output_shape=p.shape, order=3) * edge_taper
 
         # filter image in fourier space
-        aligned = support.apply_fourier_filter(aligned, weighting, human=True)
+        p = support.apply_fourier_filter(p, weighting, human=True)
 
         # back project image into reconstruction volume
-        interpolate.back_project(reconstruction, aligned, recon_position)
+        interpolate.back_project(reconstruction, p, recon_position,
+                                 meta['TiltAngle'] if align_projections else tilt_angle)
 
-
-    # possibly apply low pass filter, before storing as single projections to reconstruction folder
-    if filter_projections:
-        for i in range(projections.shape[2]):
-            # 2.3 corresponds to circular filter with width 0.9 of half of the image
-            projection_scaled = reduce_resolution_real(projections[:, :, i].squeeze(), 1.0, 2.0 * reconstruction_bin)
-            filename_single = os.path.join(save_path, 'projections', f'synthetic_{i+1}.mrc')
-            write(filename_single, projection_scaled)
+    if binning == 1:
+        filename_output = os.path.join(save_path, 'reconstruction.mrc')
     else:
-        for i in range(projections.shape[2]):
-            filename_single = os.path.join(save_path, 'projections', f'synthetic_{i+1}.mrc')
-            write(filename_single, projections[:, :, i])
+        filename_output = os.path.join(save_path, f'reconstruction_bin{binning}.mrc')
 
-    # size and volume shape of the reconstruction
-    size_reconstruction = projections.shape[0] // reconstruction_bin
-    vol_size = [size_reconstruction, ] * 3  # z should be the size of the grandmodel to match ground truth
-    # alignment file name for reconstruction
-    filename_align = os.path.join(save_path, 'alignment_simulated.txt')
-
-    if reconstruction_bin == 1:
-        filename_output = os.path.join(save_path, 'reconstruction.em')
-    else:
-        filename_output = os.path.join(save_path, f'reconstruction_bin{reconstruction_bin}.em')
-    # IF EM alignment file provided, filters applied and reconstruction will be identical.
-    projections = ProjectionList()
-    projections.load_alignment(filename_align)
-    vol = projections.reconstructVolume(dims=vol_size, reconstructionPosition=[0, 0, 0], binning=reconstruction_bin,
-                                        weighting=weighting)
-    vol.write(filename_output)
-    os.system(f'em2mrc.py -f {filename_output} -t {os.path.dirname(filename_output)}')
-    os.system(f'rm {filename_output}')
+    support.write_mrc(filename_output, reconstruction, voxel_size * binning)
 
     # only if binning during reconstruction is used or the scaled projections are used, ground truth annotation needs
     # to be updated
-    if reconstruction_bin > 1 or use_scaled_projections:
+    if binning > 1 or use_scaled_projections:
 
         # Adjust ground truth data to match cuts after scaling or after binning for reconstruction
         filename_gm = os.path.join(save_path, 'grandmodel.mrc')
@@ -1861,35 +1821,37 @@ def reconstruct_tomogram(save_path, tilt_angles, weighting=-1, reconstruction_bi
         filename_om = os.path.join(save_path, 'occupancy_mask.mrc')
         # todo| New names of grandmodel and class masks should not contain the word bin if they are only fourier
         #  shell scaled. In that case use different identifier (e.g. _scaled)
-        filename_gm_bin = os.path.join(save_path, f'grandmodel_bin{reconstruction_bin}.mrc')
-        filename_cm_bin = os.path.join(save_path, f'class_mask_bin{reconstruction_bin}.mrc')
-        filename_om_bin = os.path.join(save_path, f'occupancy_mask_bin{reconstruction_bin}.mrc')
+        filename_gm_bin = os.path.join(save_path, f'grandmodel_bin{binning}.mrc')
+        filename_cm_bin = os.path.join(save_path, f'class_mask_bin{binning}.mrc')
+        filename_om_bin = os.path.join(save_path, f'occupancy_mask_bin{binning}.mrc')
 
-        cell = read_mrc(filename_gm)
+        cell, _ = support.read_mrc(filename_gm)
         # find cropping indices
-        lind = (cell.shape[0] - reconstruction_bin * size_reconstruction)//2
+        lind = (cell.shape[0] - binning * recon_size)//2
         rind = cell.shape[0] - lind
-        cell = resize(reduce_resolution_real(cell[lind:rind, lind:rind, :], 1, 2*reconstruction_bin), 1/reconstruction_bin,
-                      interpolation='Spline')
-        write(filename_gm_bin, cell)
+        cell = ndimage.zoom(support.reduce_resolution_real(cell[lind:rind, lind:rind, :], 1, 2*binning),
+                            1/binning, order=3)
+        support.write_mrc(filename_gm_bin, cell, voxel_size * binning)
         # bin class mask and bbox needed for training
-        cell = read_mrc(filename_cm)
-        write(filename_cm_bin, downscale_class_mask(cell[lind:rind,lind:rind,:], reconstruction_bin))
+        cell, _ = support.read_mrc(filename_cm)
+        support.write_mrc(filename_cm_bin, downscale_class_mask(cell[lind:rind,lind:rind,:], binning),
+                          voxel_size * binning)
         # bin occupancy mask as well
-        cell = read_mrc(filename_om)
-        write(filename_om_bin, downscale_class_mask(cell[lind:rind,lind:rind,:], reconstruction_bin))
+        cell, _ = support.read_mrc(filename_om)
+        support.write_mrc(filename_om_bin, downscale_class_mask(cell[lind:rind,lind:rind,:], binning),
+                          voxel_size * binning)
 
         # create particle locations binned file
         adjusted_ground_truth = ''
         filename_loc = os.path.join(save_path, 'particle_locations.txt')
-        filename_loc_bin = os.path.join(save_path, f'particle_locations_bin{reconstruction_bin}.txt')
+        filename_loc_bin = os.path.join(save_path, f'particle_locations_bin{binning}.txt')
         with open(filename_loc, 'r') as fin:
             line = fin.readline()
             while line:
                 data = line.split()
-                data[1] = int(data[1]) // reconstruction_bin - lind
-                data[2] = int(data[2]) // reconstruction_bin - lind
-                data[3] = int(data[3]) // reconstruction_bin - lind
+                data[1] = int(data[1]) // binning - lind
+                data[2] = int(data[2]) // binning - lind
+                data[3] = int(data[3]) // binning - lind
                 # only add the location back if the center of particle is still inside the box after binning
                 if 0 <= data[1] < rind and 0 <= data[2] < rind and 0 <= data[3] < rind:
                     data[1] = str(data[1])
@@ -1905,7 +1867,6 @@ if __name__ == '__main__':
     # ------------------------------Import functions used in main-------------------------------------------------------
     # loadstar is for reading .meta files containing data collection parameters (tilt angles, etc.).
     # literal_eval is used for passing arguments from the config file.
-    from pytom.gui.guiFunctions import loadstar, datatype
     from ast import literal_eval
     # Use tracemalloc to record the peak memory usage of the program
     tracemalloc.start()
@@ -2016,9 +1977,10 @@ if __name__ == '__main__':
             translation_shift       = draw_range(literal_eval(config[simulator_mode]['TranslationalShift']), float,
                                                  'TranslationalShift')
             # mode specific parameters
-            if simulator_mode == 'TiltSeries':
-                metadata            = loadstar(config['TiltSeries']['MetaFile'], dtype=datatype)
-                angles              = metadata['TiltAngle'] # in degrees
+            if simulator_mode == 'TiltSeries':  # make increment scheme  ?  but allow for more complex variation?
+                metadata            = support.loadstar(config['TiltSeries']['MetaFile'],
+                                                       dtype=support.DATATYPE_METAFILE)
+                angles              = metadata['TiltAngle']  # in degrees
             elif simulator_mode == 'FrameSeries':
                 number_of_frames    = config['FrameSeries'].getint('NumberOfFrames')
         except Exception as e:
@@ -2040,10 +2002,9 @@ if __name__ == '__main__':
 
     if 'TomogramReconstruction' in config.sections():
         try:
-            weighting               = config['TomogramReconstruction'].getint('Weighting')
             reconstruction_bin      = config['TomogramReconstruction'].getint('Binning')
-            filter_projections      = config['TomogramReconstruction'].getboolean('FilterProjections')
             use_scaled_projections  = config['TomogramReconstruction'].getboolean('UseScaledProjections')
+            align                   = config['TomogramReconstruction'].getboolean('Align')
         except Exception as e:
             print(e)
             raise Exception('Missing tomogram reconstruction parameters in config file.')
@@ -2086,8 +2047,7 @@ if __name__ == '__main__':
                        absorption_contrast  =absorption_contrast,
                        voltage              =voltage,
                        number_of_membranes  =number_of_membranes,
-                       sigma_motion_blur    =sigma_motion_blur,
-                       particle_flipping    =particle_flipping)
+                       sigma_motion_blur    =sigma_motion_blur)
 
     if simulator_mode in config.sections() and simulator_mode == 'TiltSeries':
         # set seed for random number generation
@@ -2099,7 +2059,7 @@ if __name__ == '__main__':
             generate_tilt_series_cpu(save_path, angles,
                                       nodes                 =nodes,
                                       image_size            =image_size,
-                                      rotation_box_height   =None, # will automatically calculate fitting size if None
+                                      rotation_box_height   =None,  # will automatically calculate fitting size if None
                                       pixel_size            =pixel_size,
                                       oversampling          =oversampling,
                                       dose                  =electron_dose,
@@ -2172,11 +2132,10 @@ if __name__ == '__main__':
 
     if 'TomogramReconstruction' in config.sections():
         print('\n- Reconstructing tomogram')
-        reconstruct_tomogram(save_path,
-                             weighting=weighting,
-                             reconstruction_bin=reconstruction_bin,
-                             filter_projections=filter_projections,
-                             use_scaled_projections=use_scaled_projections)
+        reconstruct_tomogram(save_path, angles,
+                             binning=reconstruction_bin,
+                             use_scaled_projections=use_scaled_projections,
+                             align_projections=align)
 
     current, peak = tracemalloc.get_traced_memory()
     print(f"Current memory usage is {current / 10**6}MB; Peak was {peak / 10**6}MB")

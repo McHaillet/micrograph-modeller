@@ -1936,7 +1936,6 @@ if __name__ == '__main__':
             number_of_membranes = draw_range(literal_eval(config['GenerateModel']['NumberOfMembranes']), int,
                                              'NumberOfMembranes')
             sigma_motion_blur   = config['GenerateModel'].getfloat('SigmaMotionBlur')  # in A units
-            particle_flipping   = config['GenerateModel']['Mirror']
 
             # TODO add parameter for meta mode of random variation or stick exactly to input values
         except Exception as e:

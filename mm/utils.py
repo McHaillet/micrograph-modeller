@@ -19,7 +19,7 @@ def get_available_devices():
         available_devices.append('gpu')
 
         # get all available gpus
-        gpu_ids = GPUtil.getAvailable(includeNan=True)
+        gpu_ids = GPUtil.getAvailable(limit=100, includeNan=True)
 
         # add gpus to list of available devices
         for i in gpu_ids:

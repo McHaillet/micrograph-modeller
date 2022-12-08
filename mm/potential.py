@@ -138,9 +138,8 @@ extern "C" __global__ void iasa_integrate(
 
 
 class StructureModificationError(Exception):
-	"""Class for excepting pdb modification error."""
-	pass
-
+    """Class for excepting pdb modification error."""
+    pass
 
 
 def extend_volume(vol, increment, pad_value=0, symmetrically=False, true_center=False, interpolation='filt_bspline'):
@@ -186,6 +185,11 @@ def extend_volume(vol, increment, pad_value=0, symmetrically=False, true_center=
 
 
 def prepare_pdb(filepath, output_folder):
+    """
+    Tried to remove water, addhydrogens and add biologically relevant symmetry via pymol. Symmetry gives issues
+    there however. With chimera you can specifically add the BIOMT symmetry which does not seem possibly in pymol
+    with default commands.
+    """
     import pymol2
 
     filename = os.path.splitext(os.path.split(filepath)[1])[0]
@@ -241,8 +245,8 @@ def call_chimera(filepath, output_folder):
         return output_filepath
 
     if extension == '.pdb':
-        # Command 'sym' in chimera crashes when there is no BIOMT symmetry in the pdb file. We need to make sure sym is only
-        # executed when the BIOMT information specifies symmetrical units.
+        # Command 'sym' in chimera crashes when there is no BIOMT symmetry in the pdb file. We need to make sure
+        # sym is only executed when the BIOMT information specifies symmetrical units.
         symmetry = []
         try:
             with open(filepath,'r') as pdb:
@@ -256,7 +260,7 @@ def call_chimera(filepath, output_folder):
                     line = pdb.readline().split()
         except FileNotFoundError as e:
             print(e)
-            raise StructureModicationError('Could not read pdb file.')
+            raise StructureModificationError('Could not read pdb file.')
 
         print(f'{pdb_id} has {len(set(symmetry))} symmetrical {"unit" if len(set(symmetry)) == 1 else "units"}.')
 
@@ -539,10 +543,10 @@ def read_structure(filepath):
                             y_coordinates.append(float(split_line[6]))
                             z_coordinates.append(float(split_line[7]))
                             elements.append(split_line[2][0])  # first letter of long atom id is the element
-                            b_factors.append(0.0) # not avalaible in PQR format
-                            occupancies.append(1.0) # not avalaible in PQR format
-                        # HETATM not working here because extracting element type from double letter elements, like MG, does
-                        # not work properly. Should be tested though.
+                            b_factors.append(0.0)  # not avalaible in PQR format
+                            occupancies.append(1.0)  # not avalaible in PQR format
+                        # HETATM not working here because extracting element type from double letter
+                        # elements, like MG, does not work properly. Should be tested though.
         except Exception as e:
             print(e)
             raise Exception('Could not read pqr file.')
@@ -1772,11 +1776,11 @@ def wrapper(filepath, output_folder, voxel_size, skip_structure_edit=False, over
     # Call external programs for structure preparation and PB-solver
     # call_apbs(folder, structure, ph=ph)
     if not skip_structure_edit:
-		try:
-			filepath = call_chimera(filepath, output_folder)  # output structure name is dependent on
-			# modification by chimera
-		except StructureModificationError as e:
-			print(e)
+        try:
+            filepath = call_chimera(filepath, output_folder)  # output structure name is dependent on
+            # modification by chimera
+        except StructureModificationError as e:
+            print(e)
 
     assert filepath != 0, 'something went wrong with chimera'
 

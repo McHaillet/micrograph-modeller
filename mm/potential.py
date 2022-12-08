@@ -137,6 +137,12 @@ extern "C" __global__ void iasa_integrate(
 '''
 
 
+class StructureModificationError(Exception):
+	"""Class for excepting pdb modification error."""
+	pass
+
+
+
 def extend_volume(vol, increment, pad_value=0, symmetrically=False, true_center=False, interpolation='filt_bspline'):
     """
     Increase volume by parameter increment ([x,y,z]). Options for changing the padding value, extending symmetrically on
@@ -217,8 +223,8 @@ def call_chimera(filepath, output_folder):
     """
     print(f' - Calling chimera for {filepath}')
 
-    input_folder, file = os.path.split(filepath)
-    pdb_id, extension = os.path.splitext(file)
+    input_folder, filename = os.path.split(filepath)
+    pdb_id, extension = os.path.splitext(filename)
     # pdb_id = file.split('.')[0]
     # extension = file.split('.')[-1]
 
@@ -248,9 +254,9 @@ def call_chimera(filepath, output_folder):
                         if 'BIOMT' in line[2]:
                             symmetry.append(int(line[3]))
                     line = pdb.readline().split()
-        except Exception as e:
+        except FileNotFoundError as e:
             print(e)
-            raise Exception('Could not read pdb file.')
+            raise StructureModicationError('Could not read pdb file.')
 
         print(f'{pdb_id} has {len(set(symmetry))} symmetrical {"unit" if len(set(symmetry)) == 1 else "units"}.')
 
@@ -261,16 +267,16 @@ def call_chimera(filepath, output_folder):
                 with open(scriptpath, 'w') as chimera_script:
                     chimera_script.write(f'# Open chimera for {pdb_id} then execute following command:\n'
                                          f'# (i) remove solvent (ii) add hydrogens (iii) add symmetry units\n'
-                                         f'from chimera import runCommand as rc\n'
-                                         f'rc("open {filepath}")\n'
-                                         f'rc("delete solvent")\n'
-                                         f'rc("delete ions")\n'
-                                         f'rc("addh")\n' # If using pdb2pqr do not add hydrogens here.
-                                         f'rc("sym group biomt")\n'             # group biomt is also the default
-                                         f'rc("combine all modelId 10")\n'
-                                         f'rc("write format pdb #10 {output_filepath}")\n'
-                                         f'rc("stop")\n')
-            except Exception as e:
+                                         f'from chimerax.core.commands import run\n'
+                                         f'run(session, "open {filepath}")\n'
+                                         f'run(session, "delete solvent")\n'
+                                         f'run(session, "delete ions")\n'
+                                         f'run(session, "addh")\n' # If using pdb2pqr do not add hydrogens here.
+                                         f'run(session, "sym group biomt")\n'             # group biomt is also the default
+                                         f'run(session, "combine all modelId 10")\n'
+                                         f'run(session, "save {output_filepath} #10")\n'
+                                         f'run(session, "exit")\n')
+            except StructureModificationError as e:
                 print(e)
                 raise Exception('Could not create chimera script.')
         else:
@@ -280,21 +286,18 @@ def call_chimera(filepath, output_folder):
                 with open(scriptpath, 'w') as chimera_script:
                     chimera_script.write(f'# Open chimera for {pdb_id} then execute following command:\n'
                                          f'# (i) remove solvent (ii) add hydrogens (iii) add symmetry units\n'
-                                         f'from chimera import runCommand as rc\n'
-                                         f'rc("open {filepath}")\n'
-                                         f'rc("delete solvent")\n'
-                                         f'rc("delete ions")\n'
-                                         f'rc("addh")\n' # If using pdb2pqr do not add hydrogens here.
-                                         f'rc("write format pdb #0 {output_filepath}")\n'
-                                         f'rc("stop")\n')
-            except Exception as e:
+                                         f'from chimerax.core.commands import run\n'
+                                         f'run(session, "open {filepath}")\n'
+                                         f'run(session, "delete solvent")\n'
+                                         f'run(session, "delete ions")\n'
+                                         f'run(session, "addh")\n' # If using pdb2pqr do not add hydrogens here.
+                                         f'run(session, "save {output_filepath} #1")\n'
+                                         f'run(session, "exit")\n')
+            except FileNotFoundError as e:
                 print(e)
-                raise Exception('Could not create chimera script.')
+                raise StructureModificationError('Could not create chimera script.')
         # module chimera should be loaded here...
-        try:
-            os.system(f'chimera --nogui --script {scriptpath}')
-        except Exception as e:
-            print(e)
+        if os.system(f'chimera --nogui --script {scriptpath}') != 0:
             raise Exception('Chimera is likely not on your current path.')
 
         if len(set(symmetry)) > 1:
@@ -315,23 +318,19 @@ def call_chimera(filepath, output_folder):
             with open(scriptpath, 'w') as chimera_script:
                 chimera_script.write(f'# Open chimera for {pdb_id} then execute following command:\n'
                                      f'# (i) remove solvent (ii) add hydrogens (iii) add symmetry units\n'
-                                     f'from chimera import runCommand as rc\n'
-                                     f'rc("open {filepath}")\n'
-                                     f'rc("delete solvent")\n'
-                                     f'rc("delete ions")\n'
-                                     f'rc("addh")\n' # If using pdb2pqr do not add hydrogens here.
-                                     f'rc("write format pdb #0 {output_filepath}")\n'
-                                     f'rc("stop")\n')
-        except Exception as e:
+                                     f'from chimerax.core.commands import run\n'
+                                     f'run(session, "open {filepath}")\n'
+                                     f'run(session, "delete solvent")\n'
+                                     f'run(session, "delete ions")\n'
+                                     f'run(session, "addh")\n' # If using pdb2pqr do not add hydrogens here.
+                                     f'run(session, "save {output_filepath} #1")\n'
+                                     f'run(session, "exit")\n')
+        except FileNotFoundError as e:
             print(e)
-            raise Exception('Could not create chimera script.')
+            raise StructureModificationError('Could not create chimera script.')
         # module chimera should be loaded here...
-        try:
-            os.system(f'chimera --nogui --script {scriptpath}')
-        except Exception as e:
-            print(e)
-            raise Exception('Chimera is likely not on your current path.')
-        # return f'{pdb_id}_rem-solvent_addh'
+        if os.system(f'chimera --nogui --script {scriptpath}') != 0:  # 0 is succes
+            raise StructureModificationError('Chimera is likely not on your current path.')
         return output_filepath
     else:
         print('non-valid structure file extension')
@@ -1767,24 +1766,17 @@ def wrapper(filepath, output_folder, voxel_size, skip_structure_edit=False, over
         assert solvent_exclusion is not None, print('absorption contrast can only be applied if solvent exclusion is '
                                                     'used.')
 
-    _, file = os.path.split(filepath)
-    pdb_id, _ = os.path.splitext(file)
-
-    # output_folder = os.path.join(output_folder, pdb_id)
-    # if not os.path.exists(output_folder):
-    #     print(f'Making folder {output_folder}...')
-    #     os.mkdir(output_folder)
+    _, filename = os.path.split(filepath)
+    pdb_id, _ = os.path.splitext(filename)
 
     # Call external programs for structure preparation and PB-solver
     # call_apbs(folder, structure, ph=ph)
-    # try:
-    #     filepath = call_chimera(filepath, os.path.split(filepath)[0])  # output structure name is dependent on
-    #     # modification by chimera
-    # except Exception as e:
-    #     print(e)
-
     if not skip_structure_edit:
-        filepath = prepare_pdb(filepath, output_folder)
+		try:
+			filepath = call_chimera(filepath, output_folder)  # output structure name is dependent on
+			# modification by chimera
+		except StructureModificationError as e:
+			print(e)
 
     assert filepath != 0, 'something went wrong with chimera'
 

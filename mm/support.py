@@ -54,11 +54,14 @@ def savestar(filename, arr, header='', fmt='', comments='#'):
     np.savetxt(filename, arr, comments=comments, header=header, fmt=fmt)
 
 
-def read_mrc(filename):
+def read_mrc(filename, return_spacing_per_dim=False):
     with mrcfile.open(filename) as mrc:
         data = mrc.data.T  # transpose because I use x y z indexing
-        voxel_size = mrc.voxel_size
-    return data, voxel_size
+        vs = mrc.voxel_size
+    if not return_spacing_per_dim:
+        assert vs['x'] == vs['y'] and vs['x'] == vs['z'], 'spacing not equal in each dimension'
+        vs = vs['x']
+    return data, vs
 
 
 def write_mrc(filename, data, voxel_size, overwrite=True):

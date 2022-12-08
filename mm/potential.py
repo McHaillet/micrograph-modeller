@@ -251,9 +251,9 @@ def call_chimera(filepath, output_folder):
         try:
             with open(filepath,'r') as pdb:
                 line = pdb.readline().split()
-                while line[0] != 'REMARK':
+                while line and line[0] != 'REMARK':
                     line = pdb.readline().split()
-                while line[0] == 'REMARK':
+                while line and line[0] == 'REMARK':
                     if line[1] == '350' and len(line) > 3:
                         if 'BIOMT' in line[2]:
                             symmetry.append(int(line[3]))
@@ -276,9 +276,8 @@ def call_chimera(filepath, output_folder):
                                          f'run(session, "delete solvent")\n'
                                          f'run(session, "delete ions")\n'
                                          f'run(session, "addh")\n' # If using pdb2pqr do not add hydrogens here.
-                                         f'run(session, "sym group biomt")\n'             # group biomt is also the default
-                                         f'run(session, "combine all modelId 10")\n'
-                                         f'run(session, "save {output_filepath} #10")\n'
+                                         f'run(session, "sym #1 biomt")\n'             # group biomt is also the default
+                                         f'run(session, "save {output_filepath} #2")\n'
                                          f'run(session, "exit")\n')
             except StructureModificationError as e:
                 print(e)
@@ -301,8 +300,8 @@ def call_chimera(filepath, output_folder):
                 print(e)
                 raise StructureModificationError('Could not create chimera script.')
         # module chimera should be loaded here...
-        if os.system(f'chimera --nogui --script {scriptpath}') != 0:
-            raise Exception('Chimera is likely not on your current path.')
+        if os.system(f'chimerax --nogui --script {scriptpath}') != 0:
+            raise StructureModificationError('Chimera is likely not on your current path.')
 
         if len(set(symmetry)) > 1:
             return output_filepath
@@ -333,7 +332,7 @@ def call_chimera(filepath, output_folder):
             print(e)
             raise StructureModificationError('Could not create chimera script.')
         # module chimera should be loaded here...
-        if os.system(f'chimera --nogui --script {scriptpath}') != 0:  # 0 is succes
+        if os.system(f'chimerax --nogui --script {scriptpath}') != 0:  # 0 is succes
             raise StructureModificationError('Chimera is likely not on your current path.')
         return output_filepath
     else:
@@ -1780,7 +1779,7 @@ def wrapper(filepath, output_folder, voxel_size, skip_structure_edit=False, over
             filepath = call_chimera(filepath, output_folder)  # output structure name is dependent on
             # modification by chimera
         except StructureModificationError as e:
-            print(e)
+            print('Modification went wrong, I will continue with the base pdb.')
 
     assert filepath != 0, 'something went wrong with chimera'
 

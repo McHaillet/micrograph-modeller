@@ -1717,7 +1717,7 @@ def scale_projections(save_path, pixel_size, example_folder, example_pixel_size,
     support.write_mrc(filename_scaled, new_projections, pixel_size)
 
 
-def reconstruct_tomogram(save_path, tilt_angles, binning=1,
+def reconstruct_tomogram(save_path, binning=1,
                          use_scaled_projections=False, align_projections=False):
     """
     Reconstruction of simulated tilt series into a tomogram. Uses weighted backprojection to make a reconstruction with
@@ -1758,7 +1758,7 @@ def reconstruct_tomogram(save_path, tilt_angles, binning=1,
 
     with mrcfile.mmap(os.path.join(save_path, 'grandmodel.mrc')) as mrc:
         ice_height = mrc.header['nz']  # get z height of grandmodel
-        voxel_size = mrc.voxel_size
+        voxel_size = mrc.voxel_size['x']  # x, y, z spacing is identical
     recon_size = projections.shape[0] // binning
     reconstruction = np.zeros((recon_size,
                                recon_size,
@@ -1766,7 +1766,7 @@ def reconstruct_tomogram(save_path, tilt_angles, binning=1,
     edge_taper, weighting = None, None  # initialize empty
     recon_position = (0, 0, 0)
 
-    for i, (tilt_angle, meta) in enumerate(zip(tilt_angles, metadata)):
+    for i, meta in enumerate(metadata):
 
         if binning > 1:
             p = ndimage.zoom(projections[:, :, i], 1 / binning, order=3)  # downsample for speed-up
@@ -1801,8 +1801,7 @@ def reconstruct_tomogram(save_path, tilt_angles, binning=1,
         p = support.apply_fourier_filter(p, weighting, human=True)
 
         # back project image into reconstruction volume
-        interpolate.back_project(reconstruction, p, recon_position,
-                                 meta['TiltAngle'] if align_projections else tilt_angle)
+        interpolate.back_project(reconstruction, p, recon_position, meta['TiltAngle'])
 
     if binning == 1:
         filename_output = os.path.join(save_path, 'reconstruction.mrc')
@@ -2131,7 +2130,7 @@ if __name__ == '__main__':
 
     if 'TomogramReconstruction' in config.sections():
         print('\n- Reconstructing tomogram')
-        reconstruct_tomogram(save_path, angles,
+        reconstruct_tomogram(save_path,
                              binning=reconstruction_bin,
                              use_scaled_projections=use_scaled_projections,
                              align_projections=align)

@@ -55,7 +55,8 @@ def savestar(filename, arr, header='', fmt='', comments='#'):
 
 
 def read_mrc(filename, return_spacing_per_dim=False):
-    with mrcfile.open(filename) as mrc:
+    # open the file in permissive mode, if there are big errors reading will fail
+    with mrcfile.open(filename, permissive=True) as mrc:
         data = mrc.data.T  # transpose because I use x y z indexing
         vs = mrc.voxel_size
     if not return_spacing_per_dim:

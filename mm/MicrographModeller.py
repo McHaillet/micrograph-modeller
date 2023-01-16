@@ -1717,6 +1717,53 @@ def scale_projections(save_path, pixel_size, example_folder, example_pixel_size,
     support.write_mrc(filename_scaled, new_projections, pixel_size)
 
 
+def weighted_back_projection(projections, alignment, size, position, binning):
+
+    volume = np.zeros((size[0] // binning,
+                               size[1] // binning,
+                               size[2] // binning), dtype=np.float32)
+
+    edge_taper, weighting = None, None  # initialize empty
+
+    for i, align in enumerate(alignment):
+
+        if binning > 1:
+            p = ndimage.zoom(projections[:, :, i], 1 / binning, order=3).T  # downsample for speed-up
+        else:
+            p = projections[:, :, i].T
+
+        if edge_taper is None:  # create in first loop iter after rescaled shape is known
+            edge_taper = support.taper_mask(p.shape, p.shape[0] // 30)
+        if weighting is None:
+            weighting = support.ramp_filter(p.shape) * support.create_circle(p.shape, 0.9 * p.shape[0],
+                                                                             sigma=0.015 * p.shape[0])
+
+        # normalize image
+        p = (p - p.mean()) / p.mean()
+
+        # taper edges
+        p *= edge_taper
+
+        # inverse the transformations to correct for them
+        rot, x_shift, y_shift, mag = align[1], align[2] / binning, \
+                                     align[3] / binning, 1. / align[4]
+        mtx = vt.utils.transform_matrix(rotation=(rot, 0, 0), rotation_order='rzxz', scale=(mag, mag, mag),
+                                        translation=(x_shift, y_shift, 0), center=((p.shape[0] - 1) / 2,
+                                                                                   (p.shape[1] - 1) / 2, 0))
+        mtx_2d = np.append(mtx[:2, :2], mtx[3, :2][:, np.newaxis], axis=1)
+
+        # align the image
+        p = ndimage.affine_transform(p, mtx_2d, output_shape=p.shape, order=3) * edge_taper
+
+        # filter image in fourier space; ===> the weighted projections look good
+        p = support.apply_fourier_filter(p, weighting, human=True)
+
+        # back project image into reconstruction volume
+        interpolate.back_project(volume, p, position, align[0])  # prob. issue with kernel
+
+    return volume
+
+
 def reconstruct_tomogram(save_path, binning=1,
                          use_scaled_projections=False, align_projections=False):
     """
@@ -1759,49 +1806,14 @@ def reconstruct_tomogram(save_path, binning=1,
     with mrcfile.mmap(os.path.join(save_path, 'grandmodel.mrc')) as mrc:
         ice_height = mrc.header['nz']  # get z height of grandmodel
         voxel_size = mrc.voxel_size['x']  # x, y, z spacing is identical
-    recon_size = projections.shape[0] // binning
-    reconstruction = np.zeros((recon_size,
-                               recon_size,
-                               ice_height // binning), dtype=np.float32)
-    edge_taper, weighting = None, None  # initialize empty
+
+    recon_size = (projections.shape[0], projections.shape[0], ice_height)
     recon_position = (0, 0, 0)
 
-    for i, meta in enumerate(metadata):
-
-        if binning > 1:
-            p = ndimage.zoom(projections[:, :, i], 1 / binning, order=3)  # downsample for speed-up
-        else:
-            p = projections[:, :, i]
-
-        if edge_taper is None:  # create in first loop iter after rescaled shape is known
-            edge_taper = support.taper_mask(p.shape, p.shape[0] // 30)
-        if weighting is None:
-            weighting = support.ramp_filter(p.shape) * support.create_circle(p.shape, 0.9 * p.shape[0],
-                                                                             sigma=0.015 * p.shape[0])
-
-        # normalize image
-        p = (p - p.mean()) / p.mean()
-
-        # taper edges
-        p *= edge_taper
-
-        if align_projections:
-            # inverse the transformations to correct for them
-            rot, x_shift, y_shift, mag = -meta['InPlaneRotation'], -meta['TranslationX'] / binning, \
-                                         -meta['TranslationY'] / binning, 1. / meta['Magnification']
-            mtx = vt.utils.transform_matrix(rotation=(rot, 0, 0), rotation_order='rzxz', scale=(mag, mag, mag),
-                                            translation=(x_shift, y_shift, 0), center=((p.shape[0] - 1) / 2,
-                                                                                       (p.shape[1] - 1) / 2, 0))
-            mtx_2d = np.append(mtx[:2, :2], mtx[3, :2][:, np.newaxis], axis=1)
-
-            # align the image
-            p = ndimage.affine_transform(p, mtx_2d, output_shape=p.shape, order=3) * edge_taper
-
-        # filter image in fourier space
-        p = support.apply_fourier_filter(p, weighting, human=True)
-
-        # back project image into reconstruction volume
-        interpolate.back_project(reconstruction, p, recon_position, meta['TiltAngle'])
+    alignment = [(m['TiltAngle'], - m['InPlaneRotation'], - m['TranslationX'], - m['TranslationY'],
+                  1 / m['Magnification']) for m in metadata] if align_projections else \
+        [(m['TiltAngle'], 0, 0, 0, 1) for m in metadata]
+    reconstruction = weighted_back_projection(projections, alignment, recon_size, recon_position, binning)
 
     if binning == 1:
         filename_output = os.path.join(save_path, 'reconstruction.mrc')

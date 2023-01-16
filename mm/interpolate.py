@@ -2,7 +2,7 @@ from numba import njit, prange
 import numpy as np
 
 
-@njit(parallel=True)
+@njit  # (parallel=True)
 def back_project(volume, projection, recon_position, tilt_angle):
 
     dims = volume.shape
@@ -21,7 +21,7 @@ def back_project(volume, projection, recon_position, tilt_angle):
     tr22 = -np.cos(tilt_angle) * np.sin(0) * np.sin(0) + np.cos(0) * np.cos(0)
     tr32 = np.sin(tilt_angle) * np.sin(0)
 
-    for i in prange(dims[0]):
+    for i in range(dims[0]):  # prange for parallel
         for j in range(dims[1]):
             for k in range(dims[2]):
                 x, y, z = i - center_recon[0] + 1, j - center_recon[1] + 1, k - center_recon[2] + 1

@@ -1725,12 +1725,14 @@ def weighted_back_projection(projections, alignment, size, position, binning):
 
     edge_taper, weighting = None, None  # initialize empty
 
+    weighted = []
+
     for i, align in enumerate(alignment):
 
         if binning > 1:
-            p = ndimage.zoom(projections[:, :, i], 1 / binning, order=3).T  # downsample for speed-up
+            p = ndimage.zoom(projections[:, :, i], 1 / binning, order=3)  # downsample for speed-up
         else:
-            p = projections[:, :, i].T
+            p = projections[:, :, i]
 
         if edge_taper is None:  # create in first loop iter after rescaled shape is known
             edge_taper = support.taper_mask(p.shape, p.shape[0] // 30)
@@ -1748,8 +1750,8 @@ def weighted_back_projection(projections, alignment, size, position, binning):
         rot, x_shift, y_shift, mag = align[1], align[2] / binning, \
                                      align[3] / binning, 1. / align[4]
         mtx = vt.utils.transform_matrix(rotation=(rot, 0, 0), rotation_order='rzxz', scale=(mag, mag, mag),
-                                        translation=(x_shift, y_shift, 0), center=((p.shape[0] - 1) / 2,
-                                                                                   (p.shape[1] - 1) / 2, 0))
+                                        translation=(x_shift, y_shift, 0), center=(p.shape[0] // 2 + 1,
+                                                                                   p.shape[1] // 2 + 1, 0))
         mtx_2d = np.append(mtx[:2, :2], mtx[3, :2][:, np.newaxis], axis=1)
 
         # align the image
@@ -1758,10 +1760,12 @@ def weighted_back_projection(projections, alignment, size, position, binning):
         # filter image in fourier space; ===> the weighted projections look good
         p = support.apply_fourier_filter(p, weighting, human=True)
 
+        weighted.append(p)
+
         # back project image into reconstruction volume
         interpolate.back_project(volume, p, position, align[0])  # prob. issue with kernel
 
-    return volume
+    return volume, np.stack(weighted, axis=2)
 
 
 def reconstruct_tomogram(save_path, binning=1,

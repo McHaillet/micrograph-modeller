@@ -507,3 +507,20 @@ def taper_mask(size, width, device='cpu'):
     taper_y[-width:] = val
     x, y = xp.meshgrid(taper_y, taper_x)
     return x * (x < y) + y * (y <= x)
+
+
+def normalise_under_mask(array, mask):
+    mean = (array * mask).sum() / mask.sum()
+    std = ((array ** 2 * mask).sum() / mask.sum() - mean ** 2) ** 0.5
+    return (array - mean) / std
+
+
+def normalised_cross_correlation(array1, array2, mask=None):
+    if mask is None:
+        a = (array1 - array1.mean()) / array1.std()
+        b = (array2 - array2.mean()) / array2.std()
+        return (a * b).sum() / a.size
+    else:
+        a = normalise_under_mask(array1, mask)
+        b = normalise_under_mask(array2, mask)
+        return (a * b * mask).sum() / mask.sum()

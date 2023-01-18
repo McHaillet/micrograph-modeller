@@ -1033,7 +1033,7 @@ def generate_tilt_series_cpu(save_path,
             grandcell = grandcell.astype(xp_type)
             solvent_amplitude = 0.0
     else:
-        if grandcell.dtype == complex:
+        if np.iscomplexobj(grandcell):
             solvent_amplitude = physics.potential_amplitude(physics.AMORPHOUS_ICE_DENSITY, physics.WATER_MW, voltage)
             # set dtype to be complex64 to save memory
             xp_type = np.complex64
@@ -1725,8 +1725,6 @@ def weighted_back_projection(projections, alignment, size, position, binning):
 
     edge_taper, weighting = None, None  # initialize empty
 
-    weighted = []
-
     for i, align in enumerate(alignment):
 
         if binning > 1:
@@ -1760,12 +1758,10 @@ def weighted_back_projection(projections, alignment, size, position, binning):
         # filter image in fourier space; ===> the weighted projections look good
         p = support.apply_fourier_filter(p, weighting, human=True)
 
-        weighted.append(p)
-
         # back project image into reconstruction volume
         interpolate.back_project(volume, p, position, align[0])  # prob. issue with kernel
 
-    return volume, np.stack(weighted, axis=2)
+    return volume
 
 
 def reconstruct_tomogram(save_path, binning=1,

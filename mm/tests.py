@@ -1,7 +1,10 @@
 import unittest
 import numpy as np
 import voltools as vt
-from MicrographModeller import weighted_back_projection
+import os
+import potential
+import support
+from MicrographModeller import weighted_back_projection, generate_tilt_series_cpu, reconstruct_tomogram
 
 
 def project(volume, angles, in_plane_rotations, x_shifts, y_shifts):
@@ -12,7 +15,7 @@ def project(volume, angles, in_plane_rotations, x_shifts, y_shifts):
     return np.stack(projections, axis=2)
 
 
-class ReconstructionTest(unittest.TestCase):
+class TestReconstruction(unittest.TestCase):
     def setUp(self):
         self.object = np.zeros((50, 50, 50), dtype=np.float32)
         self.object[18:23, 25:40, 33:39] = 1.
@@ -26,18 +29,136 @@ class ReconstructionTest(unittest.TestCase):
     def test(self):
         alignment = [(-t, -r, -x, -y, 1) for t, r, x, y in zip(self.tilt_angles, self.in_plane_rotations,
                                                                self.x_shifts, self.y_shifts)]
-        reconstruction, w = weighted_back_projection(self.projections, alignment,
-                                                     (50, 50, 50), (0, 0, 0), 1)
+        reconstruction = weighted_back_projection(self.projections, alignment,
+                                                  (50, 50, 50), (0, 0, 0), 1)
         # support.write_mrc('./projections.mrc', self.projections, 1)
-        # support.write_mrc('./weighted.mrc', w, 1)
         # support.write_mrc('./original.mrc', self.object, 1)
         # support.write_mrc('./reconstruction.mrc', reconstruction, 1)
 
-        original_normalised = (self.object - self.object.mean()) / self.object.std()
-        reconstruction_normalised = (reconstruction - reconstruction.mean()) / reconstruction.std()
+        self.assertGreater(support.normalised_cross_correlation(self.object, reconstruction), 0.8)
 
-        ccc = (original_normalised * reconstruction_normalised).sum() / reconstruction_normalised.size
-        self.assertGreater(ccc, 0.8)
+
+class TestMicrographModeller(unittest.TestCase):
+    def setUp(self):
+        """Initialize simulation parameters"""
+
+        self.param_pot = {
+            'pdb':                  'test_data/3j9m.cif',
+            'voxel_size':           5,
+            'oversampling':         2,
+            'solvent_exclusion':    'masking',
+            'absorption_contrast':  True,
+            'voltage':              300e3
+        }
+
+        self.potential = potential.iasa_integration(self.param_pot['pdb'],
+                                                    voxel_size=self.param_pot['voxel_size'],
+                                                    oversampling=self.param_pot['oversampling'],
+                                                    solvent_exclusion=self.param_pot['solvent_exclusion'],
+                                                    absorption_contrast=self.param_pot['absorption_contrast'],
+                                                    voltage=self.param_pot['voltage'])
+
+        if self.potential.shape[0] % 2:
+            self.potential = np.pad(self.potential, pad_width=(0, 1), mode='constant', constant_values=0)
+
+        # create temporary dir for storing simulation data
+        if not os.path.exists('temp_simulation'):
+            os.mkdir('temp_simulation')
+
+        # specific defocus and msdz, but otherwise default parameters for ctf function
+        self.param_sim = {
+            'save_path':            './temp_simulation',
+            'angles':               list(range(-60, 60 + 3, 3)),
+            'nodes':                1,  # todo change to multiple if possible ??
+            'pixel_size':           5e-10,
+            'oversampling':         2,
+            'dose':                 80,
+            'voltage':              300e3,
+            'defocus':              3e-6,
+            'msdz':                 5e-9,
+            'camera_type':          'K2SUMMIT',
+            'camera_folder':        'detectors',
+        }
+
+        self.param_rec = {
+            'save_path':            './temp_simulation',
+            'reconstruction_bin':   1
+        }
+
+    def tearDown(self):
+        """Remove all the files gathered during simulation"""
+        directory = self.param_sim['save_path']
+        self.remove_file(os.path.join(directory, 'projections.mrc'))
+        self.remove_file(os.path.join(directory, 'noisefree_projections.mrc'))
+        self.remove_file(os.path.join(directory, 'simulation.meta'))
+        self.remove_dir(directory)
+
+    def remove_dir(self, foldername):
+        """Assert folder exists, then remove its content and itself"""
+        foldercheck = os.path.exists(foldername)
+        if not foldercheck:
+            print(foldername + " does not exist")
+        self.assertTrue(foldercheck, msg="folder " + foldername + " does not exist")
+        if foldercheck:
+            os.rmdir(foldername)
+
+    def remove_file(self, filename):
+        """Assert that file exists, then remove it"""
+        filecheck = os.path.exists(filename)
+        if not filecheck:
+            print(filename + " does not exist")
+        self.assertTrue(filecheck, msg="file " + filename + " does not exist")
+        if filecheck:
+            os.remove(filename)
+
+    def simulate_tomogram(self, c=''):
+        """Run the simulation, output here will be written to some temp storage"""
+
+        if not os.path.exists(self.param_sim['save_path'] + c):
+            os.mkdir(self.param_sim['save_path'] + c)
+
+        generate_tilt_series_cpu(self.param_sim['save_path'] + c,
+                                 self.param_sim['angles'],
+                                 nodes=self.param_sim['nodes'],
+                                 pixel_size=self.param_sim['pixel_size'],
+                                 oversampling=self.param_sim['oversampling'],
+                                 dose=self.param_sim['dose'],
+                                 voltage=self.param_sim['voltage'],
+                                 defocus=self.param_sim['defocus'],
+                                 msdz=self.param_sim['msdz'],
+                                 camera_type=self.param_sim['camera_type'],
+                                 camera_folder=self.param_sim['camera_folder'],
+                                 grandcell=self.potential.copy())
+
+        # reconstruct the tomogram with alignment
+        metadata = support.loadstar(os.path.join(self.param_rec['save_path'] + c, 'simulation.meta'),
+                                    dtype=support.DATATYPE_METAFILE)
+        alignment = [(m['TiltAngle'], m['InPlaneRotation'], m['TranslationX'], m['TranslationY'],
+                      m['Magnification']) for m in metadata]
+        projections, _ = support.read_mrc(os.path.join(self.param_rec['save_path'] + c, 'projections.mrc'))
+        return weighted_back_projection(projections, alignment, self.potential.shape, (0, 0, 0), 1)
+
+    def test(self):
+        """Run two simulations and test their correlation. Both will have a different realization of noise and will
+        slightly differ."""
+
+        # generate two different realization of tomogram noise
+        spacing = self.param_sim['pixel_size'] * 1e10
+        tomo_1 = support.reduce_resolution_fourier(self.simulate_tomogram(), spacing, 2 * spacing * 8)
+        tomo_2 = support.reduce_resolution_fourier(self.simulate_tomogram(), spacing, 2 * spacing * 8)
+        support.write_mrc('/home/mchaillet/tests/subtomo1.mrc', tomo_1, 1)
+        support.write_mrc('/home/mchaillet/tests/subtomo2.mrc', tomo_2, 1)
+
+        # mask for correlation
+        r = int(tomo_1.shape[0] / 2 * 0.8)
+        mask = support.create_sphere(tomo_1.shape, radius=r, sigma=r / 20., num_sigma=2)
+
+        # calculate cross-correlation coefficient of the two tomograms
+        ccc = support.normalised_cross_correlation(tomo_1, tomo_2, mask=mask)
+
+        print('normalized cross correlation of two simulations of identical volume after downsampling both '
+              'subtomograms 8 times = ', ccc)
+        self.assertGreater(ccc, 0.75, msg='correlation is not sufficient between simulations')
 
 
 if __name__ == '__main__':

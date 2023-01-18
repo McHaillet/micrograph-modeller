@@ -1,10 +1,11 @@
 import GPUtil
 import numpy as np
+import scipy.ndimage
 try:
     import cupy as cp
-    import cupyx.scipy.ndimage as ndimage
+    import cupyx.scipy.ndimage
 except ImportError:
-    import scipy.ndimage as ndimage
+    pass
 
 
 def get_available_devices():
@@ -37,9 +38,9 @@ AVAILABLE_DEVICES = get_available_devices()
 
 def get_array_module(array):
     if type(array) is np.ndarray:
-        return np, ndimage, 'cpu'
+        return np, scipy.ndimage, 'cpu'
     else:  # if not a np array, it must be cupy
-        return cp, ndimage, 'gpu:' + str(array.device.id)
+        return cp, cupyx.scipy.ndimage, 'gpu:' + str(array.device.id)
 
 
 def get_array_module_from_device(device):
@@ -47,9 +48,9 @@ def get_array_module_from_device(device):
         raise ValueError(f'Unknown device ({device}), must be one of {AVAILABLE_DEVICES}')
 
     if 'cpu' in device:
-        return np, ndimage
+        return np, scipy.ndimage
     else:
-        return cp, ndimage
+        return cp, cupyx.scipy.ndimage
 
 
 # parses device string and switches cupy to specific id

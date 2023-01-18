@@ -1209,11 +1209,11 @@ def generate_tilt_series_cpu(save_path,
     metafile['Voltage']             = np.array([voltage * 1e-3, ] * len(angles))
     metafile['SphericalAberration'] = np.array([spherical_aberration * 1e3, ] * len(angles))
     metafile['PixelSpacing']        = np.array([pixel_size * 1e10, ] * len(angles))
-    metafile['TiltAngle']           = np.array(angles)
-    metafile['InPlaneRotation']     = np.array(in_plane_rotations)
-    metafile['TranslationX']        = np.array([x for (x, y, z) in translations])
-    metafile['TranslationY']        = np.array([y for (x, y, z) in translations])
-    metafile['Magnification']       = np.array([x for (x, y, z) in magnifications])
+    metafile['TiltAngle']           = - np.array(angles)
+    metafile['InPlaneRotation']     = - np.array(in_plane_rotations)
+    metafile['TranslationX']        = - np.array([x for (x, y, z) in translations])
+    metafile['TranslationY']        = - np.array([y for (x, y, z) in translations])
+    metafile['Magnification']       = 1 / np.array([x for (x, y, z) in magnifications])
     for i in range(len(angles)):
         metafile['FileName'][i]     = os.path.join(save_path, 'projections', f'synthetic_{i+1}.mrc')
 
@@ -1478,10 +1478,10 @@ def generate_frame_series_cpu(save_path, n_frames=20, nodes=1, image_size=None, 
     metafile['SphericalAberration'] = np.array([spherical_aberration * 1e3, ] * n_frames)
     metafile['PixelSpacing'] = np.array([pixel_size * 1e10, ] * n_frames)
     metafile['TiltAngle'] = np.array([.0] * n_frames)
-    metafile['InPlaneRotation'] = np.array(in_plane_rotations)
-    metafile['TranslationX'] = np.array([x for (x, y, z) in translations_voxel])
-    metafile['TranslationY'] = np.array([y for (x, y, z) in translations_voxel])
-    metafile['Magnification'] = np.array([x for (x, y, z) in magnifications])
+    metafile['InPlaneRotation'] = - np.array(in_plane_rotations)
+    metafile['TranslationX'] = - np.array([x for (x, y, z) in translations_voxel])
+    metafile['TranslationY'] = - np.array([y for (x, y, z) in translations_voxel])
+    metafile['Magnification'] = 1 / np.array([x for (x, y, z) in magnifications])
     for i in range(n_frames):
         metafile['FileName'][i] = os.path.join(save_path, 'projections', f'synthetic_{i+1}.mrc')
 
@@ -1752,7 +1752,7 @@ def weighted_back_projection(projections, alignment, size, position, binning):
         mtx = vt.utils.transform_matrix(rotation=(rot, 0, 0), rotation_order='rzxz', scale=(mag, mag, mag),
                                         translation=(x_shift, y_shift, 0), center=(p.shape[0] // 2 + 1,
                                                                                    p.shape[1] // 2 + 1, 0))
-        mtx_2d = np.append(mtx[:2, :2], mtx[3, :2][:, np.newaxis], axis=1)
+        mtx_2d = np.append(mtx[:2, :2], mtx[:2, 3][:, np.newaxis], axis=1)
 
         # align the image
         p = ndimage.affine_transform(p, mtx_2d, output_shape=p.shape, order=3) * edge_taper
@@ -1814,8 +1814,8 @@ def reconstruct_tomogram(save_path, binning=1,
     recon_size = (projections.shape[0], projections.shape[0], ice_height)
     recon_position = (0, 0, 0)
 
-    alignment = [(m['TiltAngle'], - m['InPlaneRotation'], - m['TranslationX'], - m['TranslationY'],
-                  1 / m['Magnification']) for m in metadata] if align_projections else \
+    alignment = [(m['TiltAngle'], m['InPlaneRotation'], m['TranslationX'], m['TranslationY'],
+                  m['Magnification']) for m in metadata] if align_projections else \
         [(m['TiltAngle'], 0, 0, 0, 1) for m in metadata]
     reconstruction = weighted_back_projection(projections, alignment, recon_size, recon_position, binning)
 

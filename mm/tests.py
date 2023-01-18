@@ -1,7 +1,6 @@
 import unittest
 import numpy as np
 import voltools as vt
-import support
 from MicrographModeller import weighted_back_projection
 
 

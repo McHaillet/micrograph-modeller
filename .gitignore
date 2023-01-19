@@ -3,4 +3,4 @@
 
 # ignore __pychache__
 .pyc
-mm/__pycache__/
+micrographmodeller/__pycache__/

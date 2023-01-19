@@ -25,7 +25,7 @@ DATATYPE_METAFILE = [('DefocusU', 'f4'),
                      ('AcquisitionOrder', 'i4'),
                      ('FileName', 'U1000')]
 HEADER_METAFILE = ''
-unitsMetaFile = ['um', 'um', 'deg', 'kV', 'mm', '', 'deg', 'A', 'A', 'deg',
+unitsMetaFile = ['um', 'um', 'deg', 'kV', 'micrographmodeller', '', 'deg', 'A', 'A', 'deg',
                  'deg', 'deg', 'px', 'px', 'px', '', '', 'px', '', '']
 FMT_METAFILE = '%11.6f %11.6f %6.2f %4d %6.2f %4.2f %11.6f %11.6f %4d ' \
                '%7.3f %7.3f %7.3f %6.2f %6.2f %6.2f %5.3f %5.3f %4d %3d %s'

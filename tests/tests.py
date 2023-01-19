@@ -2,9 +2,7 @@ import unittest
 import numpy as np
 import voltools as vt
 import os
-import potential
-import support
-from MicrographModeller import weighted_back_projection, generate_tilt_series_cpu, reconstruct_tomogram
+import micrographmodeller as mm
 
 
 def project(volume, angles, in_plane_rotations, x_shifts, y_shifts):
@@ -29,13 +27,13 @@ class TestReconstruction(unittest.TestCase):
     def test(self):
         alignment = [(-t, -r, -x, -y, 1) for t, r, x, y in zip(self.tilt_angles, self.in_plane_rotations,
                                                                self.x_shifts, self.y_shifts)]
-        reconstruction = weighted_back_projection(self.projections, alignment,
-                                                  (50, 50, 50), (0, 0, 0), 1)
-        # support.write_mrc('./projections.mrc', self.projections, 1)
-        # support.write_mrc('./original.mrc', self.object, 1)
-        # support.write_mrc('./reconstruction.mrc', reconstruction, 1)
+        reconstruction = mm.micrographmodeller.weighted_back_projection(self.projections, alignment,
+                                                                        (50, 50, 50), (0, 0, 0), 1)
+        # mm.support.write_mrc('./projections.mrc', self.projections, 1)
+        # mm.support.write_mrc('./original.mrc', self.object, 1)
+        # mm.support.write_mrc('./reconstruction.mrc', reconstruction, 1)
 
-        self.assertGreater(support.normalised_cross_correlation(self.object, reconstruction), 0.8)
+        self.assertGreater(mm.support.normalised_cross_correlation(self.object, reconstruction), 0.8)
 
 
 class TestMicrographModeller(unittest.TestCase):
@@ -51,7 +49,7 @@ class TestMicrographModeller(unittest.TestCase):
             'voltage':              300e3
         }
 
-        self.potential = potential.iasa_integration(self.param_pot['pdb'],
+        self.potential = mm.potential.iasa_integration(self.param_pot['pdb'],
                                                     voxel_size=self.param_pot['voxel_size'],
                                                     oversampling=self.param_pot['oversampling'],
                                                     solvent_exclusion=self.param_pot['solvent_exclusion'],
@@ -90,7 +88,7 @@ class TestMicrographModeller(unittest.TestCase):
         directory = self.param_sim['save_path']
         self.remove_file(os.path.join(directory, 'projections.mrc'))
         self.remove_file(os.path.join(directory, 'noisefree_projections.mrc'))
-        self.remove_file(os.path.join(directory, 'simulation.meta'))
+        self.remove_file(os.path.join(directory, '../micrographmodeller/simulation.meta'))
         self.remove_dir(directory)
 
     def remove_dir(self, foldername):
@@ -117,7 +115,7 @@ class TestMicrographModeller(unittest.TestCase):
         if not os.path.exists(self.param_sim['save_path'] + c):
             os.mkdir(self.param_sim['save_path'] + c)
 
-        generate_tilt_series_cpu(self.param_sim['save_path'] + c,
+        mm.micrographmodeller.generate_tilt_series_cpu(self.param_sim['save_path'] + c,
                                  self.param_sim['angles'],
                                  nodes=self.param_sim['nodes'],
                                  pixel_size=self.param_sim['pixel_size'],
@@ -131,12 +129,14 @@ class TestMicrographModeller(unittest.TestCase):
                                  grandcell=self.potential.copy())
 
         # reconstruct the tomogram with alignment
-        metadata = support.loadstar(os.path.join(self.param_rec['save_path'] + c, 'simulation.meta'),
-                                    dtype=support.DATATYPE_METAFILE)
+        metadata = mm.support.loadstar(os.path.join(self.param_rec['save_path'] + c,
+                                                 '../micrographmodeller/simulation.meta'),
+                                    dtype=mm.support.DATATYPE_METAFILE)
         alignment = [(m['TiltAngle'], m['InPlaneRotation'], m['TranslationX'], m['TranslationY'],
                       m['Magnification']) for m in metadata]
-        projections, _ = support.read_mrc(os.path.join(self.param_rec['save_path'] + c, 'projections.mrc'))
-        return weighted_back_projection(projections, alignment, self.potential.shape, (0, 0, 0), 1)
+        projections, _ = mm.support.read_mrc(os.path.join(self.param_rec['save_path'] + c, 'projections.mrc'))
+        return mm.micrographmodeller.weighted_back_projection(projections, alignment,
+                                                              self.potential.shape, (0, 0, 0), 1)
 
     def test(self):
         """Run two simulations and test their correlation. Both will have a different realization of noise and will
@@ -144,17 +144,17 @@ class TestMicrographModeller(unittest.TestCase):
 
         # generate two different realization of tomogram noise
         spacing = self.param_sim['pixel_size'] * 1e10
-        tomo_1 = support.reduce_resolution_fourier(self.simulate_tomogram(), spacing, 2 * spacing * 8)
-        tomo_2 = support.reduce_resolution_fourier(self.simulate_tomogram(), spacing, 2 * spacing * 8)
-        support.write_mrc('/home/mchaillet/tests/subtomo1.mrc', tomo_1, 1)
-        support.write_mrc('/home/mchaillet/tests/subtomo2.mrc', tomo_2, 1)
+        tomo_1 = mm.support.reduce_resolution_fourier(self.simulate_tomogram(), spacing, 2 * spacing * 8)
+        tomo_2 = mm.support.reduce_resolution_fourier(self.simulate_tomogram(), spacing, 2 * spacing * 8)
+        # mm.support.write_mrc('./subtomo1.mrc', tomo_1, 1)
+        # mm.support.write_mrc('./subtomo2.mrc', tomo_2, 1)
 
         # mask for correlation
         r = int(tomo_1.shape[0] / 2 * 0.8)
-        mask = support.create_sphere(tomo_1.shape, radius=r, sigma=r / 20., num_sigma=2)
+        mask = mm.support.create_sphere(tomo_1.shape, radius=r, sigma=r / 20., num_sigma=2)
 
         # calculate cross-correlation coefficient of the two tomograms
-        ccc = support.normalised_cross_correlation(tomo_1, tomo_2, mask=mask)
+        ccc = mm.support.normalised_cross_correlation(tomo_1, tomo_2, mask=mask)
 
         print('normalized cross correlation of two simulations of identical volume after downsampling both '
               'subtomograms 8 times = ', ccc)

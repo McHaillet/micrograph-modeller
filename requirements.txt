@@ -1,0 +1,11 @@
+cupy>=10.6.0
+gputil
+joblib>=1.0.1
+numpy
+numba
+mrcfile
+pyvista
+scipy
+threadpoolctl
+tqdm
+voltools>=0.4.6

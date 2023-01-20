@@ -1,8 +1,8 @@
-cupy>=10.6.0
 gputil
 joblib>=1.0.1
 numpy
 numba
+matplotlib
 mrcfile
 pyvista
 scipy

@@ -3,6 +3,7 @@ import numpy as np
 import voltools as vt
 import os
 import micrographmodeller as mm
+from importlib import resources as importlib_resources
 
 
 def project(volume, angles, in_plane_rotations, x_shifts, y_shifts):
@@ -27,7 +28,7 @@ class TestReconstruction(unittest.TestCase):
     def test(self):
         alignment = [(-t, -r, -x, -y, 1) for t, r, x, y in zip(self.tilt_angles, self.in_plane_rotations,
                                                                self.x_shifts, self.y_shifts)]
-        reconstruction = mm.micrographmodeller.weighted_back_projection(self.projections, alignment,
+        reconstruction = mm.simulator.weighted_back_projection(self.projections, alignment,
                                                                         (50, 50, 50), (0, 0, 0), 1)
         # mm.support.write_mrc('./projections.mrc', self.projections, 1)
         # mm.support.write_mrc('./original.mrc', self.object, 1)
@@ -63,6 +64,10 @@ class TestMicrographModeller(unittest.TestCase):
         if not os.path.exists('temp_simulation'):
             os.mkdir('temp_simulation')
 
+        # camera folder
+        with importlib_resources.path(mm, 'detectors') as path:
+            camera_folder = str(path)
+
         # specific defocus and msdz, but otherwise default parameters for ctf function
         self.param_sim = {
             'save_path':            './temp_simulation',
@@ -75,7 +80,7 @@ class TestMicrographModeller(unittest.TestCase):
             'defocus':              3e-6,
             'msdz':                 5e-9,
             'camera_type':          'K2SUMMIT',
-            'camera_folder':        'detectors',
+            'camera_folder':        camera_folder
         }
 
         self.param_rec = {
@@ -88,7 +93,7 @@ class TestMicrographModeller(unittest.TestCase):
         directory = self.param_sim['save_path']
         self.remove_file(os.path.join(directory, 'projections.mrc'))
         self.remove_file(os.path.join(directory, 'noisefree_projections.mrc'))
-        self.remove_file(os.path.join(directory, '../micrographmodeller/simulation.meta'))
+        self.remove_file(os.path.join(directory, 'simulation.meta'))
         self.remove_dir(directory)
 
     def remove_dir(self, foldername):
@@ -115,7 +120,7 @@ class TestMicrographModeller(unittest.TestCase):
         if not os.path.exists(self.param_sim['save_path'] + c):
             os.mkdir(self.param_sim['save_path'] + c)
 
-        mm.micrographmodeller.generate_tilt_series_cpu(self.param_sim['save_path'] + c,
+        mm.simulator.generate_tilt_series_cpu(self.param_sim['save_path'] + c,
                                  self.param_sim['angles'],
                                  nodes=self.param_sim['nodes'],
                                  pixel_size=self.param_sim['pixel_size'],
@@ -130,12 +135,12 @@ class TestMicrographModeller(unittest.TestCase):
 
         # reconstruct the tomogram with alignment
         metadata = mm.support.loadstar(os.path.join(self.param_rec['save_path'] + c,
-                                                 '../micrographmodeller/simulation.meta'),
-                                    dtype=mm.support.DATATYPE_METAFILE)
+                                                    'simulation.meta'),
+                                       dtype=mm.support.DATATYPE_METAFILE)
         alignment = [(m['TiltAngle'], m['InPlaneRotation'], m['TranslationX'], m['TranslationY'],
                       m['Magnification']) for m in metadata]
         projections, _ = mm.support.read_mrc(os.path.join(self.param_rec['save_path'] + c, 'projections.mrc'))
-        return mm.micrographmodeller.weighted_back_projection(projections, alignment,
+        return mm.simulator.weighted_back_projection(projections, alignment,
                                                               self.potential.shape, (0, 0, 0), 1)
 
     def test(self):

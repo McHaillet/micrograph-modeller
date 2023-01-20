@@ -28,7 +28,7 @@ def get_available_devices():
 
     except ImportError:
         print('Warning: cupy is not found. Therefore, the only available device is "cpu".\n'
-              'Please install cupy>=7.0.0b4:\npip install cupy>=7.0.0b4')
+              'Please install cupy>=10.6.0:\npip install cupy>=10.6.0')
 
     return available_devices
 

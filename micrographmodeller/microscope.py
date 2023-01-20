@@ -1,6 +1,6 @@
 import os
-import physics
-import utils
+import micrographmodeller.physics as physics
+import micrographmodeller.utils as utils
 import numpy as np
 from scipy.optimize import curve_fit
 

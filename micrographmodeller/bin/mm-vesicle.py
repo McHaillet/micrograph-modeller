@@ -5,6 +5,7 @@ import argparse
 import os
 import sys
 import micrographmodeller as mm
+from importlib import resources as importlib_resources
 
 
 if __name__ == '__main__':
@@ -21,10 +22,11 @@ if __name__ == '__main__':
                         help='Voxel spacing to sample electrostatic potential on in A.')
     parser.add_argument('-d', '--destination', type=str, required=False, default='./',
                         help='Folder to write output to, default is current folder.')
-    parser.add_argument('-m', '--membrane-pdb', type=str, required=True,
-                        help='Membrane model file (make sure waters are removed), default can be found in: '
-                             'micrograph-modeller/micrographmodeller/membrane_models/dppc128_dehydrated.pdb. Look here for more '
-                             'examples: https://people.ucalgary.ca/~tieleman/download.html.')
+    parser.add_argument('-m', '--membrane-pdb', type=str, required=False,
+                        help='Membrane model file (make sure waters are removed), default is dppc128_dehydrated.pdb. '
+                             'Which is included in the package data. You can also provide your own by specifying the '
+                             'path to a .pdb file. The bilayer needs to be flat and preferably have periodic '
+                             'boundaries. examples: https://people.ucalgary.ca/~tieleman/download.html.')
     parser.add_argument('-x', '--exclude-solvent', type=str, required=False, choices=['gaussian', 'masking'],
                         help='Whether to exclude solvent around each atom as a correction of the potential, '
                              'either "gaussian" or "masking".')
@@ -40,9 +42,13 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     # check if io locations are valid
-    if not os.path.exists(args.membrane_pdb):
+    if args.membrane_pdb is None:
+        with importlib_resources.path(mm, 'membrane_models/dppc128_dehydrated.pdb') as path:
+            args.membrane_pdb = str(path)
+    elif not os.path.exists(args.membrane_pdb):
         print('Input file does not exist, exiting...')
         sys.exit(0)
+
     if not os.path.exists(args.destination):
         print('Destination for writing files does not exist, exiting...')
         sys.exit(0)
@@ -65,7 +71,7 @@ if __name__ == '__main__':
                                          V_sol=args.solvent_potential, absorption_contrast=True,
                                          voltage=args.voltage * 1e3, density=mm.physics.PROTEIN_DENSITY,
                                          molecular_weight=mm.physics.PROTEIN_MW, structure_tuple=structure_tuple,
-                                         gpu_id=args.gpu_id)
+                                         gpu_id=args.gpu_id).get()
     else:
         potential = mm.potential.iasa_integration_parallel('', args.spacing, solvent_exclusion=args.exclude_solvent,
                                               V_sol=args.solvent_potential, absorption_contrast=True,
@@ -74,8 +80,8 @@ if __name__ == '__main__':
                                               cores=args.cores)
 
     # filter and write
-    real_fil = mm.support.reduce_resolution_fourier(potential.real, args.spacing, 2 * args.spacing).get()
-    imag_fil = mm.support.reduce_resolution_fourier(potential.imag, args.spacing, 2 * args.spacing).get()
+    real_fil = mm.support.reduce_resolution_fourier(potential.real, args.spacing, 2 * args.spacing)
+    imag_fil = mm.support.reduce_resolution_fourier(potential.imag, args.spacing, 2 * args.spacing)
 
     name = 'bilayer'  # double values to get diameters of ellipsoid
     size = f'{vesicle.radii[0] * 2 / 10:.0f}x{vesicle.radii[1] * 2 / 10:.0f}x{vesicle.radii[2] * 2 / 10:.0f}nm'

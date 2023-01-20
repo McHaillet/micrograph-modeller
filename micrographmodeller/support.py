@@ -1,6 +1,6 @@
 import numpy as np
-import microscope
-import utils
+import micrographmodeller.microscope as microscope
+import micrographmodeller.utils as utils
 import mrcfile
 
 

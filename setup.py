@@ -1,14 +1,12 @@
 import setuptools
 
-from micrographmodeller import __version__
-
 # readme fetch
 with open('README.md', 'r') as f:
     long_description = f.read()
 
 setuptools.setup(
     name='micrograph-modeller',
-    version=__version__,
+    version='0.1',
     description='Simulation of electron micrographs with cytosolic macromolecules and vesicle systems',
     long_description=long_description,
     long_description_content_type='text/markdown',
@@ -19,11 +17,11 @@ setuptools.setup(
     platforms=['any'],
     python_requires='>=3.8',
     install_requires=[
-        'cupy>=10.6.0',
         'gputil',
         'joblib>=1.0.1',
         'numpy',
         'numba',
+        'matplotlib',
         'mrcfile',
         'pyvista',
         'scipy',
@@ -32,15 +30,18 @@ setuptools.setup(
         'voltools>=0.4.6'
     ],
     packages=setuptools.find_packages(),
+    include_package_data=True,
     test_suite='tests',
+    scripts=[
+        'micrographmodeller/bin/micrograph-modeller.py',
+        'micrographmodeller/bin/mm-potential.py',
+        'micrographmodeller/bin/mm-vesicle.py'
+    ],
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Science/Research',
         'Topic :: Scientific/Engineering',
         'License :: OSI Approved :: GPLv3 License',
         'Programming Language :: Python :: 3 :: Only',
-    ],
-    scripts=['micrographmodeller/micrographmodeller.py',
-             'micrographmodeller/potential.py',
-             'micrographmodeller/membrane.py']
+    ]
 )

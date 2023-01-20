@@ -12,7 +12,7 @@ import pyvista as pv
 import scipy.ndimage as ndimage
 from scipy.spatial import distance
 from numba import jit
-from potential import read_structure
+from micrographmodeller.potential import read_structure
 from threadpoolctl import threadpool_info, threadpool_limits
 from voltools.utils import translation_matrix, rotation_matrix
 

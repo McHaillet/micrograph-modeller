@@ -1,11 +1,11 @@
 import multiprocessing as mp
 import numpy as np
-import physics
 import os
 import sys
 import scipy.ndimage as ndimage
-import support
-import utils
+import micrographmodeller.physics as physics
+import micrographmodeller.support as support
+import micrographmodeller.utils as utils
 
 
 # // N should be len(atoms) // 3

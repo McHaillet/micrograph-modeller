@@ -1,6 +1,6 @@
-
+# TODO this file is currently unfunctional!
 from pytom.gpu.initialize import xp, device
-import pytom.simulation.physics as physics
+import micrographmodeller.physics as physics
 
 
 def generate_template_from_pdb(structure_file_path, spacing, binning=1, modify_structure=False, solvent_correction=None,

@@ -10,6 +10,7 @@ import numpy as np
 import random
 import micrographmodeller as mm
 from ast import literal_eval
+from importlib import resources as importlib_resources
 
 
 class ConfigLogger(object):
@@ -151,7 +152,8 @@ if __name__ == '__main__':
             try:
                 camera_folder       = config['Microscope']['CameraFolder']
             except Exception as e:
-                camera_folder       = os.path.join(os.path.split(os.path.realpath(__file__))[0], 'detectors')
+                with importlib_resources.path(mm, 'detectors') as path:
+                    camera_folder   = str(path)
             # beam damage SNR
             beam_damage_snr         = draw_range(literal_eval(config['Microscope']['BeamDamageSNR']), float,
                                                  'BeamDamageSNR')

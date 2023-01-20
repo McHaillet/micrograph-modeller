@@ -1,6 +1,11 @@
 # ignore .idea folder from pycharm
 .idea
 
+# ignore eggs
+*.egg-info/
+*.egg
+
 # ignore __pychache__
 .pyc
 micrographmodeller/__pycache__/
+tests/__pycache__/

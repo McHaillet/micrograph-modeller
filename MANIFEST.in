@@ -1,0 +1,6 @@
+include README.md
+include LICENSE
+include simulation.meta
+include simulation_frame.conf
+include simulation_tilt.conf
+recursive-include tests/ *

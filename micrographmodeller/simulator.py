@@ -6,11 +6,7 @@ TOM toolbox for matlab.
 """
 
 # IO and parallel modules
-import configparser
-import tracemalloc
-import logging
 import os
-import datetime
 import sys
 import mrcfile
 from tqdm import tqdm
@@ -20,11 +16,10 @@ from joblib import Parallel, delayed
 import numpy as np
 import voltools as vt
 import scipy.ndimage as ndimage
-import random
-import physics
-import support
-import microscope
-import interpolate
+import micrographmodeller.physics as physics
+import micrographmodeller.support as support
+import micrographmodeller.microscope as microscope
+import micrographmodeller.interpolate as interpolate
 
 
 def downscale_class_mask(volume, binning):
@@ -1163,7 +1158,7 @@ def generate_tilt_series_cpu(save_path,
         metafile['FileName'][i]     = os.path.join(save_path, 'projections', f'synthetic_{i+1}.mrc')
 
     support.savestar(os.path.join(save_path, 'simulation.meta'), metafile,
-             fmt=support.FMT_METAFILE, header=support.HEADER_METAFILE)
+                     fmt=support.FMT_METAFILE, header=support.HEADER_METAFILE)
 
 
 def generate_frame_series_cpu(save_path, n_frames=20, nodes=1, image_size=None, pixel_size=1E-9,
@@ -1431,7 +1426,7 @@ def generate_frame_series_cpu(save_path, n_frames=20, nodes=1, image_size=None, 
         metafile['FileName'][i] = os.path.join(save_path, 'projections', f'synthetic_{i+1}.mrc')
 
     support.savestar(os.path.join(save_path, 'simulation.meta'), metafile,
-             fmt=support.FMT_METAFILE, header=support.HEADER_METAFILE)
+                     fmt=support.FMT_METAFILE, header=support.HEADER_METAFILE)
 
 
 def FSS(fimage1, fimage2, numberBands, verbose=False):

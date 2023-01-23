@@ -713,8 +713,9 @@ def parallel_integrate(index, size, solvent_exclusion, voxel_size, dtype):
         # Radius of gaussian sphere
         r = np.sqrt(r2 / 3)
 
-        ind_min = [int((c - r) // voxel_size) for c in rc]  # Smallest index to contain relevant potential x,y,z
-        ind_max = [int((c + r) // voxel_size) for c in rc]  # Largest index to contain relevant potential x,y,z
+        ind_min = [max(int((c - r) // voxel_size), 0) for c in rc]  # Smallest index to contain relevant potential x,y,z
+        ind_max = [min(int((c + r) // voxel_size), s) for (c, s) in zip(rc, size)]  # Largest index to contain relevant
+
         # Explicit real space coordinates for the max and min boundary of each voxel
         x_min_bound = np.arange(ind_min[0], ind_max[0] + 1, 1) * voxel_size - rc[0]
         x_max_bound = np.arange(ind_min[0] + 1, ind_max[0] + 2, 1) * voxel_size - rc[0]
@@ -722,9 +723,6 @@ def parallel_integrate(index, size, solvent_exclusion, voxel_size, dtype):
         y_max_bound = np.arange(ind_min[1] + 1, ind_max[1] + 2, 1) * voxel_size - rc[1]
         z_min_bound = np.arange(ind_min[2], ind_max[2] + 1, 1) * voxel_size - rc[2]
         z_max_bound = np.arange(ind_min[2] + 1, ind_max[2] + 2, 1) * voxel_size - rc[2]
-
-        # x_min_bound, y_min_bound, z_min_bound = np.meshgrid(x_min_bound, y_min_bound, z_min_bound, indexing='ij')
-        # x_max_bound, y_max_bound, z_max_bound = np.meshgrid(x_max_bound, y_max_bound, z_max_bound, indexing='ij')
 
         atom_potential = 0
 
@@ -771,6 +769,291 @@ def parallel_integrate(index, size, solvent_exclusion, voxel_size, dtype):
                     x_matrix * y_matrix * z_matrix)
 
     print(f' --- process {mp.current_process().name} finished')
+
+
+def sample_iasa_cpu(structure_tuple, box_dimensions, voxel_size, cores, solvent_exclusion=None):
+    from functools import partial, reduce
+    from contextlib import closing
+    import operator
+    import ctypes
+
+    x_coordinates, y_coordinates, z_coordinates, elements, b_factors, occupancies = structure_tuple
+
+    # split the data into fractions over the nodes
+    indices = split_data(len(x_coordinates), cores)  # adjust nodes in case n_atoms is smaller than n_cores
+
+    x_shared, y_shared, z_shared = mp.Array('d', x_coordinates, lock=False), \
+                                   mp.Array('d', y_coordinates, lock=False), \
+                                   mp.Array('d', z_coordinates, lock=False)
+    b_shared, o_shared = mp.Array('d', b_factors, lock=False), mp.Array('d', occupancies, lock=False)
+    e_shared = mp.Array(ctypes.c_wchar_p, elements, lock=False)
+
+    print(f'Number of atoms to go over is {len(x_coordinates)} spread over {len(indices)} processes')
+
+    # create shared arrays
+    potential_shared = mp.Array(ctypes.c_float, reduce(operator.mul, box_dimensions))
+    solvent_shared = mp.Array(ctypes.c_float, reduce(operator.mul, box_dimensions))
+    # initialize them via numpy
+    dtype = np.float32
+    potential, solvent = tonumpyarray(potential_shared, box_dimensions, dtype), \
+                         tonumpyarray(solvent_shared, box_dimensions, dtype)
+    potential[:], solvent[:] = np.zeros(box_dimensions, dtype=dtype), \
+                               np.zeros(box_dimensions, dtype=dtype)
+
+    with closing(mp.Pool(len(indices), initializer=init, initargs=((x_shared, y_shared, z_shared,
+                                                                    e_shared, b_shared, o_shared),
+                                                                   potential_shared, solvent_shared))) as p:
+        p.map_async(partial(parallel_integrate,
+                            size=box_dimensions,
+                            solvent_exclusion=solvent_exclusion,
+                            voxel_size=voxel_size,
+                            dtype=dtype), indices)
+    p.join()
+
+    return potential, solvent
+
+
+def sample_iasa_gpu(structure_tuple, box_dimensions, voxel_size, gpu_device, solvent_exclusion=None):
+    # cp set device ...
+    cp, _ = utils.get_array_module_from_device(gpu_device)
+
+    # unpack atom info
+    x_coordinates, y_coordinates, z_coordinates, elements, b_factors, occupancies = structure_tuple
+
+    # setup easier gpu indexing for scattering factors
+    scattering = cp.array([v["g"] for k, v in physics.scattering_factors.items()], dtype=cp.float32)
+    map_element_to_id = {k: i for i, k in enumerate(physics.scattering_factors.keys())}
+
+    # setup gpu indexing for solvent displacement
+    displacement = cp.array([physics.volume_displaced[k] if k in physics.volume_displaced.keys()
+                            else physics.volume_displaced['C'] for k in map_element_to_id.keys()], dtype=cp.float32)
+
+    # find dimensions
+    n_atoms = len(x_coordinates)
+
+    # initiate the final volume
+    sz_potential_gpu = cp.array(box_dimensions, dtype=cp.uint32)
+    potential = cp.zeros(box_dimensions, dtype=cp.float32)
+    if solvent_exclusion == 'gaussian':
+        solvent = cp.zeros(box_dimensions, dtype=cp.float32)
+    else:
+        solvent = cp.array([0], dtype=cp.float32)
+
+    # print to user the number of atoms in system
+    print(f'Number of atoms to go over is {n_atoms}')
+
+    # create kernel
+    iasa_integrate = cp.RawKernel(code=iasa_integrate_text, name='iasa_integrate')
+
+    # move the selected atoms to gpu!
+    atoms = cp.ascontiguousarray(cp.array([x_coordinates,
+                                           y_coordinates,
+                                           z_coordinates]).T,
+                                 dtype=cp.float32)
+    n_atoms_iter = atoms.shape[0]
+    elements = cp.array([map_element_to_id[e.upper()] for e in elements], dtype=cp.uint8)
+    b_factors = cp.array(b_factors, dtype=cp.float32)
+    occupancies = cp.array(occupancies, dtype=cp.float32)
+
+    # threads and blocks
+    n_threads = 1024
+    n_blocks = int(cp.ceil(n_atoms / n_threads).get())
+
+    # call gpu integration either with or without gaussian solvent exclusion
+    if solvent_exclusion == 'gaussian':
+        iasa_integrate((n_blocks, 1, 1,), (n_threads, 1, 1), (atoms, elements, b_factors, occupancies, potential,
+                                                              solvent, scattering, sz_potential_gpu, displacement,
+                                                              cp.float32(voxel_size), cp.uint32(n_atoms_iter),
+                                                              cp.uint8(1)))
+        # last argument is a Boolean for using, or not using, solvent exclusion
+    else:
+        iasa_integrate((n_blocks, 1, 1,), (n_threads, 1, 1), (atoms, elements, b_factors, occupancies, potential,
+                                                              solvent, scattering, sz_potential_gpu, displacement,
+                                                              cp.float32(voxel_size), cp.uint32(n_atoms_iter),
+                                                              cp.uint8(0)))
+
+    return potential.get(), solvent.get()
+
+
+class ElectrostaticPotential:
+    def __init__(self, data, solvent_exclusion=None, solvent_potential=physics.V_WATER,
+                 absorption_contrast=False, voltage=300E3, protein_density=physics.PROTEIN_DENSITY,
+                 molecular_weight=physics.PROTEIN_MW):
+        if isinstance(data, tuple):
+            pass
+        elif isinstance(data, str) and (data.endswith('.pdb') or data.endswith('.cif')):
+            data = read_structure(data)
+        else:
+            print('invalid input')
+            sys.exit(0)
+
+        self.x_coordinates, self.y_coordinates, self.z_coordinates, \
+            self.elements, self.b_factors, self.occupancies = map(np.array, data)
+
+        self.x_limit = (self.x_coordinates.min(), self.x_coordinates.max())
+        self.y_limit = (self.y_coordinates.min(), self.y_coordinates.max())
+        self.z_limit = (self.z_coordinates.min(), self.z_coordinates.max())
+
+        self.solvent_exclusion = solvent_exclusion
+        self.solvent_potential = solvent_potential
+        self.absorption_contrast = absorption_contrast
+        self.voltage = voltage
+        self.protein_density = protein_density
+        self.molecular_weight = molecular_weight
+
+    def calculate_box_size(self, overhang):
+        return max([self.x_limit[1] - self.x_limit[0] + 2 * overhang,
+                    self.y_limit[1] - self.y_limit[0] + 2 * overhang,
+                    self.z_limit[1] - self.z_limit[0] + 2 * overhang])
+
+    def update_limits(self):
+        self.x_limit = (self.x_coordinates.min(), self.x_coordinates.max())
+        self.y_limit = (self.y_coordinates.min(), self.y_coordinates.max())
+        self.z_limit = (self.z_coordinates.min(), self.z_coordinates.max())
+
+    def center_in_box(self, box_size_angstrom):
+        x_size = self.x_limit[1] - self.x_limit[0]
+        y_size = self.y_limit[1] - self.y_limit[0]
+        z_size = self.z_limit[1] - self.z_limit[0]
+        self.x_coordinates += (box_size_angstrom - x_size) / 2 - self.x_limit[0]
+        self.y_coordinates += (box_size_angstrom - y_size) / 2 - self.y_limit[0]
+        self.z_coordinates += (box_size_angstrom - z_size) / 2 - self.z_limit[0]
+        self.update_limits()
+
+    def select_atoms(self, x_range, y_range, z_range, voxel_size):
+        x_select = np.logical_and((x_range[0] * voxel_size) <= self.x_coordinates,
+                                  self.x_coordinates < (x_range[1] * voxel_size))
+        y_select = np.logical_and((y_range[0] * voxel_size) <= self.y_coordinates,
+                                  self.y_coordinates < (y_range[1] * voxel_size))
+        z_select = np.logical_and((z_range[0] * voxel_size) <= self.z_coordinates,
+                                  self.z_coordinates < (z_range[1] * voxel_size))
+        selector = np.logical_and(x_select, np.logical_and(y_select, z_select))
+        # subtract start of box from the coordinates so the selection is inside the box
+        return self.x_coordinates[selector] - x_range[0] * voxel_size, \
+               self.y_coordinates[selector] - y_range[0] * voxel_size, \
+               self.z_coordinates[selector] - z_range[0] * voxel_size, \
+               self.elements[selector], self.b_factors[selector], self.occupancies[selector]
+
+    def sample_to_box(self, voxel_size=1, oversampling=1, box_size_angstrom=None, center_coordinates_in_box=True,
+                      overhang=20, split=1, gpu_id=None, cores=1):
+        assert isinstance(split, int) and split >= 1, 'invalid split value, only int >= 1'
+        assert isinstance(cores, int) and cores >= 1, 'invalid cores value, only int >= 1'
+
+        # set device to run on
+        if gpu_id is not None:
+            assert isinstance(gpu_id, int) and gpu_id >= 0, 'invalid gpu_id value, only int >= 0'
+            device = 'gpu:' + str(gpu_id)
+            utils.switch_to_device(device)
+        else:
+            device = 'cpu'
+
+        # fix voxel size by oversampling
+        if oversampling > 1:
+            voxel_size /= oversampling
+
+        if box_size_angstrom is None:
+            box_size_angstrom = self.calculate_box_size(overhang)
+
+        if center_coordinates_in_box:
+            self.center_in_box(box_size_angstrom)
+
+        # extend volume by 30 A in all directions to
+        dV = voxel_size ** 3
+        # conversion of electrostatic potential to correct units
+        C = 4 * np.sqrt(np.pi) * physics.constants['h'] ** 2 / (
+                physics.constants['el'] * physics.constants['me']) * 1E20  # angstrom**2
+
+        box_size = int(box_size_angstrom // voxel_size)
+        box_size_split = int(box_size // split)
+
+        if split == 1:
+            # sample directly
+            if 'gpu' in device:
+                potential, solvent = sample_iasa_gpu((self.x_coordinates, self.y_coordinates, self.z_coordinates,
+                                                      self.elements, self.b_factors, self.occupancies),
+                                                     (box_size, ) * 3, voxel_size, device, self.solvent_exclusion)
+            else:
+                potential, solvent = sample_iasa_cpu((self.x_coordinates, self.y_coordinates, self.z_coordinates,
+                                                      self.elements, self.b_factors, self.occupancies),
+                                                     (box_size,) * 3, voxel_size, cores, self.solvent_exclusion)
+
+        else:
+            potential, solvent = np.zeros((box_size,) * 3, dtype=np.float32), \
+                                 np.zeros((box_size,) * 3, dtype=np.float32)
+            for i in range(split):
+                for j in range(split):
+                    for k in range(split):
+                        x_start = box_size_split * i + int(- overhang // voxel_size if i != 0 else 0)
+                        y_start = box_size_split * j + int(- overhang // voxel_size if j != 0 else 0)
+                        z_start = box_size_split * k + int(- overhang // voxel_size if k != 0 else 0)
+                        x_end = box_size_split * (i + 1) + int(box_size % split if i == split - 1
+                                                            else overhang // voxel_size)
+                        y_end = box_size_split * (j + 1) + int(box_size % split if j == split - 1
+                                                            else overhang // voxel_size)
+                        z_end = box_size_split * (k + 1) + int(box_size % split if k == split - 1
+                                                            else overhang // voxel_size)
+
+                        box_sub = (x_end - x_start, y_end - y_start, z_end - z_start)
+
+                        atoms_sub = self.select_atoms((x_start, x_end), (y_start, y_end), (z_start, z_end),
+                                                      voxel_size)
+
+                        if 'gpu' in device:
+                            potential_sub, solvent_sub = sample_iasa_gpu(atoms_sub, box_sub, voxel_size, device)
+                        else:
+                            potential_sub, solvent_sub = sample_iasa_cpu(atoms_sub, box_sub, voxel_size, cores)
+
+                        potential[x_start: x_end, y_start: y_end, z_start: z_end] = potential_sub
+                        solvent[x_start: x_end, y_start: y_end, z_start: z_end] = solvent_sub
+
+        # convert potential to correct units and correct for solvent exclusion
+        if self.solvent_exclusion == 'gaussian':
+            # Correct for solvent and convert both the solvent and potential array to the correct units.
+            real = (potential / dV * C) - (solvent / dV * self.solvent_potential)
+        elif self.solvent_exclusion == 'masking':  # only if voxel size is small enough for accurate determination
+            solvent_mask = (potential > 1E-5) * 1.0
+            # construct solvent mask, and add gaussian decay
+            if oversampling == 1:
+                solvent_mask = support.reduce_resolution_real(solvent_mask, voxel_size, voxel_size * 2)
+                solvent_mask[solvent_mask < 0.001] = 0
+            # subtract solvent from the protein electrostatic potential
+            real = (potential / dV * C) - (solvent_mask * self.solvent_potential)
+        else:
+            real = potential / dV * C
+
+        # determine absorption contrast if set
+        if self.absorption_contrast:
+            # voltage by default 300 keV
+            molecule_absorption = physics.potential_amplitude(self.protein_density, self.molecular_weight, self.voltage)
+            solvent_absorption = physics.potential_amplitude(physics.AMORPHOUS_ICE_DENSITY,
+                                                             physics.WATER_MW, self.voltage) * \
+                                 (self.solvent_potential / physics.V_WATER)
+            print('Calculating absorption contrast')
+            print(f'Molecule absorption = {molecule_absorption:.3f}')
+            print(f'Solvent absorption = {solvent_absorption:.3f}')
+
+            if self.solvent_exclusion == 'masking':
+                imaginary = solvent_mask * (molecule_absorption - solvent_absorption)
+            elif self.solvent_exclusion == 'gaussian':
+                imaginary = solvent / dV * (molecule_absorption - solvent_absorption)
+            else:
+                print(
+                    'ERROR: Absorption contrast cannot be generated if solvent exclusion is not set to either gaussian '
+                    'or masking.')
+                sys.exit(0)
+
+            electrostatic_potential = real + 1j * imaginary
+
+        else:
+            electrostatic_potential = real
+
+        if oversampling > 1:
+            print('Rescaling after oversampling')
+            electrostatic_potential = ndimage.zoom(support.reduce_resolution_real(electrostatic_potential, voxel_size,
+                                                                                  voxel_size * 2 * oversampling),
+                                                   1 / oversampling, order=3)
+
+        return electrostatic_potential
 
 
 def iasa_integration_parallel(filepath, voxel_size=1., oversampling=1, solvent_exclusion=None,
@@ -1067,14 +1350,6 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
     else:
         solvent = cp.array([0], dtype=cp.float32)
 
-    # find the number of atoms that can be loaded to gpu each time
-    # get current space on gpu
-    free_space = cp.cuda.Device().mem_info[0]  # this value is in bytes
-    # space per atom
-    bytes_per_atom = 3 * 4 + 1 + 4 + 4  # 3 coordinate floats, element type uint, b_factor float, and occupancy float
-    atoms_per_iter = free_space // bytes_per_atom
-    niter = -(n_atoms // -atoms_per_iter)
-
     # print to user the number of atoms in system
     print(f'Number of atoms to go over is {n_atoms}')
 
@@ -1082,48 +1357,40 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
     iasa_integrate = cp.RawKernel(code=iasa_integrate_text, name='iasa_integrate')
     mempool = cp.get_default_memory_pool()
 
-    # distribute the atoms in multiple runs if there are too many
-    for i in range(niter):
-        # TODO check that large systems are correctly split in batches
-        # TODO set the subset index for this iteration
-        index = [i * atoms_per_iter, (i + 1) * atoms_per_iter if (i + 1) < niter else n_atoms]
+    # move the selected atoms to gpu!
+    atoms = cp.ascontiguousarray(cp.array([x_coordinates,
+                                           y_coordinates,
+                                           z_coordinates]).T,
+                                 dtype=cp.float32)
+    n_atoms_iter = atoms.shape[0]
+    elements = cp.array([map_element_to_id[e.upper()] for e in elements], dtype=cp.uint8)
+    b_factors = cp.array(b_factors, dtype=cp.float32)
+    occupancies = cp.array(occupancies, dtype=cp.float32)
 
-        # move the selected atoms to gpu!
-        atoms = cp.ascontiguousarray(cp.array([x_coordinates[index[0]:index[1]],
-                                               y_coordinates[index[0]:index[1]],
-                                               z_coordinates[index[0]:index[1]]]).T,
-                                     dtype=cp.float32)
-        n_atoms_iter = atoms.shape[0]
-        elements = cp.array([map_element_to_id[e.upper()] for e in elements[index[0]:index[1]]], dtype=cp.uint8)
-        b_factors = cp.array(b_factors[index[0]:index[1]], dtype=cp.float32)
-        occupancies = cp.array(occupancies[index[0]:index[1]], dtype=cp.float32)
+    # give some extra space for atoms at the edges
+    atoms[:, 0] += (- min_x + extra_space)  # + difference[0] / 2
+    atoms[:, 1] += (- min_y + extra_space)  # + difference[1] / 2
+    atoms[:, 2] += (- min_z + extra_space)  # + difference[2] / 2
 
-        print(f'{n_atoms_iter} on iter {i} ---- using index {index}')
+    # threads and blocks
+    n_threads = 1024
+    n_blocks = int(cp.ceil(n_atoms / n_threads).get())
 
-        # give some extra space for atoms at the edges
-        atoms[:, 0] += (- min_x + extra_space)  # + difference[0] / 2
-        atoms[:, 1] += (- min_y + extra_space)  # + difference[1] / 2
-        atoms[:, 2] += (- min_z + extra_space)  # + difference[2] / 2
+    # call gpu integration either with or without gaussian solvent exclusion
+    if solvent_exclusion == 'gaussian':
+        iasa_integrate((n_blocks, 1, 1,), (n_threads, 1, 1), (atoms, elements, b_factors, occupancies, potential,
+                                                              solvent, scattering, sz_potential_gpu, displacement,
+                                                              cp.float32(voxel_size), cp.uint32(n_atoms_iter),
+                                                              cp.uint8(1)))
+        # last argument is a Boolean for using, or not using, solvent exclusion
+    else:
+        iasa_integrate((n_blocks, 1, 1,), (n_threads, 1, 1), (atoms, elements, b_factors, occupancies, potential,
+                                                              solvent, scattering, sz_potential_gpu, displacement,
+                                                              cp.float32(voxel_size), cp.uint32(n_atoms_iter),
+                                                              cp.uint8(0)))
 
-        # threads and blocks
-        n_threads = 1024
-        n_blocks = int(cp.ceil(n_atoms_iter / n_threads).get())
-
-        # call gpu integration either with or without gaussian solvent exclusion
-        if solvent_exclusion == 'gaussian':
-            iasa_integrate((n_blocks, 1, 1,), (n_threads, 1, 1), (atoms, elements, b_factors, occupancies, potential,
-                                                                  solvent, scattering, sz_potential_gpu, displacement,
-                                                                  cp.float32(voxel_size), cp.uint32(n_atoms_iter),
-                                                                  cp.uint8(1)))
-            # last argument is a Boolean for using solvent exclusion
-        else:
-            iasa_integrate((n_blocks, 1, 1,), (n_threads, 1, 1), (atoms, elements, b_factors, occupancies, potential,
-                                                                  solvent, scattering, sz_potential_gpu, displacement,
-                                                                  cp.float32(voxel_size), cp.uint32(n_atoms_iter),
-                                                                  cp.uint8(0)))
-
-        del atoms, elements, b_factors, occupancies
-        mempool.free_all_blocks()
+    del atoms, elements, b_factors, occupancies
+    mempool.free_all_blocks()
 
     # convert potential to correct units and correct for solvent exclusion
     if solvent_exclusion == 'gaussian':
@@ -1190,12 +1457,6 @@ def iasa_integration_gpu(filepath, voxel_size=1., oversampling=1, solvent_exclus
         return real
 
 
-# def iasa_integration_gpu_split(filepath, voxel_size=1., oversampling=1, solvent_exclusion=None,
-#                      V_sol=physics.V_WATER, absorption_contrast=False, voltage=300E3, density=physics.PROTEIN_DENSITY,
-#                      molecular_weight=physics.PROTEIN_MW, structure_tuple=None, gpu_id=0)
-
-
-# @jit(nopython=True) should use this? too many other function calls probably
 def iasa_integration(filepath, voxel_size=1., oversampling=1, solvent_exclusion=None,
                      V_sol=physics.V_WATER, absorption_contrast=False, voltage=300E3, density=physics.PROTEIN_DENSITY,
                      molecular_weight=physics.PROTEIN_MW, structure_tuple=None):

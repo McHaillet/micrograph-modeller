@@ -9,3 +9,6 @@
 .pyc
 micrographmodeller/__pycache__/
 tests/__pycache__/
+
+# ignore some output sometimes written to tests (for dev convenience)
+tests/*.mrc

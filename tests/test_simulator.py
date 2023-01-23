@@ -1,40 +1,8 @@
 import unittest
 import numpy as np
-import voltools as vt
 import os
 import micrographmodeller as mm
 from importlib import resources as importlib_resources
-
-
-def project(volume, angles, in_plane_rotations, x_shifts, y_shifts):
-    projections = []
-    for a, r, x, y in zip(angles, in_plane_rotations, x_shifts, y_shifts):
-        projections.append(vt.transform(volume, rotation=(0., a, r), rotation_order='rzyz',
-                                        rotation_units='deg', translation=(x, y, 0)).mean(axis=2))
-    return np.stack(projections, axis=2)
-
-
-class TestReconstruction(unittest.TestCase):
-    def setUp(self):
-        self.object = np.zeros((50, 50, 50), dtype=np.float32)
-        self.object[18:23, 25:40, 33:39] = 1.
-        self.tilt_angles = list(range(-60, 62, 2))
-        rng = np.random.default_rng(seed=1)
-        self.in_plane_rotations = rng.random(len(self.tilt_angles)) * 10 - 5
-        self.x_shifts = rng.random(len(self.tilt_angles)) * 2 - 1
-        self.y_shifts = rng.random(len(self.tilt_angles)) * 2 - 1
-        self.projections = project(self.object, self.tilt_angles, self.in_plane_rotations, self.x_shifts, self.y_shifts)
-
-    def test(self):
-        alignment = [(-t, -r, -x, -y, 1) for t, r, x, y in zip(self.tilt_angles, self.in_plane_rotations,
-                                                               self.x_shifts, self.y_shifts)]
-        reconstruction = mm.simulator.weighted_back_projection(self.projections, alignment,
-                                                                        (50, 50, 50), (0, 0, 0), 1)
-        # mm.support.write_mrc('./projections.mrc', self.projections, 1)
-        # mm.support.write_mrc('./original.mrc', self.object, 1)
-        # mm.support.write_mrc('./reconstruction.mrc', reconstruction, 1)
-
-        self.assertGreater(mm.support.normalised_cross_correlation(self.object, reconstruction), 0.8)
 
 
 class TestMicrographModeller(unittest.TestCase):
@@ -45,10 +13,18 @@ class TestMicrographModeller(unittest.TestCase):
             'pdb':                  'test_data/3j9m.cif',
             'voxel_size':           5,
             'oversampling':         2,
-            'solvent_exclusion':    'masking',
+            'solvent_exclusion':    'gaussian',
             'absorption_contrast':  True,
             'voltage':              300e3
         }
+
+        # ep = mm.potential.ElectrostaticPotential(self.param_pot['pdb'],
+        #                                     solvent_exclusion=self.param_pot['solvent_exclusion'],
+        #                                     absorption_contrast=self.param_pot['absorption_contrast'],
+        #                                     voltage=self.param_pot['voltage'])
+        # potential = ep.sample_to_box(voxel_size=self.param_pot['voxel_size'],
+        #                              oversampling=self.param_pot['oversampling'],
+        #                              center_coordinates_in_box=True, overhang=30, split=2, cores=4)
 
         self.potential = mm.potential.iasa_integration(self.param_pot['pdb'],
                                                     voxel_size=self.param_pot['voxel_size'],

@@ -54,7 +54,7 @@ if __name__ == '__main__':
         sys.exit(0)
 
     mm.potential.wrapper(args.file, args.destination, args.spacing, skip_structure_edit=args.skip_edit,
-             oversampling=args.oversampling,
-            binning=args.binning, solvent_exclusion=args.exclude_solvent, solvent_potential=args.solvent_potential,
-            absorption_contrast=args.absorption_contrast, voltage=args.voltage * 1e3, cores=args.cores,
-            gpu_id=args.gpu_id)
+                         oversampling=args.oversampling, binning=args.binning,
+                         solvent_exclusion=args.exclude_solvent, solvent_potential=args.solvent_potential,
+                         absorption_contrast=args.absorption_contrast, voltage=args.voltage * 1e3, cores=args.cores,
+                         gpu_id=args.gpu_id)

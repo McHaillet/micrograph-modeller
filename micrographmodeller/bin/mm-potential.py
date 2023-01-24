@@ -19,7 +19,7 @@ if __name__ == '__main__':
     parser.add_argument('-d', '--destination', type=str, required=False, default='./',
                         help='Folder to store the files produced by potential.py. Default is current folder.')
     parser.add_argument('--skip-edit', action='store_true', default=False, required=False,
-                        help='Whether to call schrodinger/pymol2 module for some structure modification: '
+                        help='Whether to call chimerax from command line module for some structure modification: '
                              'adding hydrogens, removing water molecules, and adding crystal symmetry.')
     parser.add_argument('-s', '--spacing', type=float, required=False, default=1.,
                         help='The size of the voxels of the output volume. 1A by default.')

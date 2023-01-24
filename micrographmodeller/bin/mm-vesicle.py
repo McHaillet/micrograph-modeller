@@ -66,31 +66,24 @@ if __name__ == '__main__':
     structure_tuple = vesicle.sample_membrane(args.membrane_pdb, cores=args.cores)
 
     # sample the atoms to voxels
-    if args.gpu_id is not None:
-        potential = mm.potential.iasa_integration_gpu('', args.spacing, solvent_exclusion=args.exclude_solvent,
-                                         V_sol=args.solvent_potential, absorption_contrast=True,
-                                         voltage=args.voltage * 1e3, density=mm.physics.PROTEIN_DENSITY,
-                                         molecular_weight=mm.physics.PROTEIN_MW, structure_tuple=structure_tuple,
-                                         gpu_id=args.gpu_id).get()
-    else:
-        potential = mm.potential.iasa_integration_parallel('', args.spacing, solvent_exclusion=args.exclude_solvent,
-                                              V_sol=args.solvent_potential, absorption_contrast=True,
-                                              voltage=args.voltage * 1e3, density=mm.physics.PROTEIN_DENSITY,
-                                              molecular_weight=mm.physics.PROTEIN_MW, structure_tuple=structure_tuple,
-                                              cores=args.cores)
+    ep = mm.potential.ElectrostaticPotential(structure_tuple, solvent_exclusion=args.exclude_solvent,
+                                             solvent_potential=args.solvent_potential, absorption_contrast=True,
+                                             voltage=args.voltage * 1e3, protein_density=mm.physics.PROTEIN_DENSITY,
+                                             molecular_weight=mm.physics.PROTEIN_MW)
+    potential = ep.sample_to_box(voxel_size=args.spacing, center_coordinates_in_box=True, overhang=20,
+                                 gpu_id=args.gpu_id, cores=args.cores)
 
     # filter and write
-    real_fil = mm.support.reduce_resolution_fourier(potential.real, args.spacing, 2 * args.spacing)
-    imag_fil = mm.support.reduce_resolution_fourier(potential.imag, args.spacing, 2 * args.spacing)
+    potential = mm.support.reduce_resolution_real(potential, args.spacing, 2 * args.spacing)
 
     name = 'bilayer'  # double values to get diameters of ellipsoid
     size = f'{vesicle.radii[0] * 2 / 10:.0f}x{vesicle.radii[1] * 2 / 10:.0f}x{vesicle.radii[2] * 2 / 10:.0f}nm'
 
     mm.support.write_mrc(os.path.join(args.destination, f'{name}_{size}_{args.spacing:.2f}A_solvent-4.530V_real.mrc'),
-                      real_fil, args.spacing)
+                         potential.real, args.spacing)
     mm.support.write_mrc(os.path.join(args.destination,
                                    f'{name}_{size}_{args.spacing:.2f}A_solvent-4.530V_imag_300V.mrc'),
-                      imag_fil, args.spacing)
+                         potential.imag, args.spacing)
 
     end = time.time()
 

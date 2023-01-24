@@ -35,6 +35,9 @@ if __name__ == '__main__':
     parser.add_argument('-v', '--voltage', type=float, required=False, default=300,
                         help='Value for the electron acceleration voltage. Needed for calculating the inelastic mean '
                              'free path in case of absorption contrast calculation. By default 300 (keV).')
+    parser.add_argument('--split-sampling', type=int, required=False, default=1,
+                        help='Option for splitting the sampling of the atoms over multiples boxes. Needed for '
+                             'calculation on single gpu.')
     parser.add_argument('-c', '--cores', type=int, required=False, default=1,
                         help='Number of cpu cores to use for the calculation.')
     parser.add_argument('-g', '--gpu-id', type=int, required=False,
@@ -43,7 +46,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     # check if io locations are valid
     if args.membrane_pdb is None:
-        with importlib_resources.path(mm, 'membrane_models/dppc128_dehydrated.pdb') as path:
+        with importlib_resources.path('micrographmodeller.membrane_models', 'dppc128_dehydrated.pdb') as path:
             args.membrane_pdb = str(path)
     elif not os.path.exists(args.membrane_pdb):
         print('Input file does not exist, exiting...')
@@ -71,7 +74,7 @@ if __name__ == '__main__':
                                              voltage=args.voltage * 1e3, protein_density=mm.physics.PROTEIN_DENSITY,
                                              molecular_weight=mm.physics.PROTEIN_MW)
     potential = ep.sample_to_box(voxel_size=args.spacing, center_coordinates_in_box=True, overhang=20,
-                                 gpu_id=args.gpu_id, cores=args.cores)
+                                 split=args.split_sampling, gpu_id=args.gpu_id, cores=args.cores)
 
     # filter and write
     potential = mm.support.reduce_resolution_real(potential, args.spacing, 2 * args.spacing)

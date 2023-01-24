@@ -896,6 +896,7 @@ class ElectrostaticPotential:
             print('invalid input')
             sys.exit(0)
 
+        # this duplicates the data ... not great
         self.x_coordinates, self.y_coordinates, self.z_coordinates, \
             self.elements, self.b_factors, self.occupancies = map(np.array, data)
 

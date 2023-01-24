@@ -8,6 +8,8 @@
 # ignore __pychache__
 .pyc
 micrographmodeller/__pycache__/
+micrographmodeller/membrane_models/__pycache__/
+micrographmodeller/detectors/__pycache__/
 tests/__pycache__/
 
 # ignore some output sometimes written to tests (for dev convenience)

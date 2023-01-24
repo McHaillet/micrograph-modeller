@@ -18,20 +18,13 @@ class TestMicrographModeller(unittest.TestCase):
             'voltage':              300e3
         }
 
-        # ep = mm.potential.ElectrostaticPotential(self.param_pot['pdb'],
-        #                                     solvent_exclusion=self.param_pot['solvent_exclusion'],
-        #                                     absorption_contrast=self.param_pot['absorption_contrast'],
-        #                                     voltage=self.param_pot['voltage'])
-        # potential = ep.sample_to_box(voxel_size=self.param_pot['voxel_size'],
-        #                              oversampling=self.param_pot['oversampling'],
-        #                              center_coordinates_in_box=True, overhang=30, split=2, cores=4)
-
-        self.potential = mm.potential.iasa_integration(self.param_pot['pdb'],
-                                                    voxel_size=self.param_pot['voxel_size'],
-                                                    oversampling=self.param_pot['oversampling'],
-                                                    solvent_exclusion=self.param_pot['solvent_exclusion'],
-                                                    absorption_contrast=self.param_pot['absorption_contrast'],
-                                                    voltage=self.param_pot['voltage'])
+        ep = mm.potential.ElectrostaticPotential(self.param_pot['pdb'],
+                                                 solvent_exclusion=self.param_pot['solvent_exclusion'],
+                                                 absorption_contrast=self.param_pot['absorption_contrast'],
+                                                 voltage=self.param_pot['voltage'])
+        self.potential = ep.sample_to_box(voxel_size=self.param_pot['voxel_size'],
+                                          oversampling=self.param_pot['oversampling'],
+                                          center_coordinates_in_box=True, overhang=30, split=1, cores=4)
 
         if self.potential.shape[0] % 2:
             self.potential = np.pad(self.potential, pad_width=(0, 1), mode='constant', constant_values=0)

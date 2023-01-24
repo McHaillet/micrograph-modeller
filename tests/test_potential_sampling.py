@@ -18,19 +18,19 @@ class TestElectrostaticPotential(unittest.TestCase):
     def test_base(self):
         # base method
         potential1 = mm.potential.iasa_integration(self.param_pot['pdb'],
-                                                       voxel_size=self.param_pot['voxel_size'],
-                                                       oversampling=self.param_pot['oversampling'],
-                                                       solvent_exclusion=None,
-                                                       absorption_contrast=False,
-                                                       voltage=self.param_pot['voltage'])
+                                                   voxel_size=self.param_pot['voxel_size'],
+                                                   oversampling=self.param_pot['oversampling'],
+                                                   solvent_exclusion=None,
+                                                   absorption_contrast=False,
+                                                   voltage=self.param_pot['voltage'])
 
         ep = mm.potential.ElectrostaticPotential(self.param_pot['pdb'],
                                                  solvent_exclusion=None,
                                                  absorption_contrast=False,
                                                  voltage=self.param_pot['voltage'])
         potential2 = ep.sample_to_box(voxel_size=self.param_pot['voxel_size'],
-                                     oversampling=self.param_pot['oversampling'],
-                                     center_coordinates_in_box=True, overhang=30, split=1, cores=4)
+                                      oversampling=self.param_pot['oversampling'],
+                                      center_coordinates_in_box=True, overhang=30, split=1, cores=4)
 
         self.assertTrue(not np.iscomplexobj(potential1))
         self.assertTrue(not np.iscomplexobj(potential2))
@@ -75,7 +75,7 @@ class TestElectrostaticPotential(unittest.TestCase):
         potential1 = ep.sample_to_box(voxel_size=self.param_pot['voxel_size'],
                                       oversampling=self.param_pot['oversampling'],
                                       center_coordinates_in_box=True, overhang=30, split=1, cores=4)
-        mm.support.write_mrc('./potential1.mrc', potential1.real, 5)
+        mm.support.write_mrc('./potential.mrc', potential1.real, 5)
 
         ep = mm.potential.ElectrostaticPotential(self.param_pot['pdb'],
                                                  solvent_exclusion=self.param_pot['solvent_exclusion'],
@@ -84,15 +84,15 @@ class TestElectrostaticPotential(unittest.TestCase):
         potential2 = ep.sample_to_box(voxel_size=self.param_pot['voxel_size'],
                                       oversampling=self.param_pot['oversampling'],
                                       center_coordinates_in_box=True, overhang=30, split=2, cores=4)
-        mm.support.write_mrc('./potential2.mrc', potential2.real, 5)
+        mm.support.write_mrc('./potential_split_cpu.mrc', potential2.real, 5)
 
         ccc = mm.support.normalised_cross_correlation(potential1.real, potential2.real)
         print('splitting: ', ccc)
-        self.assertGreater(ccc, 0.99)
+        self.assertGreater(ccc, 0.999)
 
         ccc = mm.support.normalised_cross_correlation(potential1.imag, potential2.imag)
         print('splitting (imag): ', ccc)
-        self.assertGreater(ccc, 0.99)
+        self.assertGreater(ccc, 0.999)
 
     @unittest.skip("only splitting")
     def test_solvent(self):
@@ -121,15 +121,16 @@ class TestElectrostaticPotential(unittest.TestCase):
     def test_gpu(self):
         # test whether splitting gives same results
         ep = mm.potential.ElectrostaticPotential(self.param_pot['pdb'],
-                                                 solvent_exclusion='masking',
+                                                 solvent_exclusion='gaussian',
                                                  absorption_contrast=self.param_pot['absorption_contrast'],
                                                  voltage=self.param_pot['voltage'])
         potential1 = ep.sample_to_box(voxel_size=self.param_pot['voxel_size'],
                                       oversampling=self.param_pot['oversampling'],
                                       center_coordinates_in_box=True, overhang=30, split=2, gpu_id=0)
+        mm.support.write_mrc('./potential_split_gpu.mrc', potential1.real, 5)
 
         ep = mm.potential.ElectrostaticPotential(self.param_pot['pdb'],
-                                                 solvent_exclusion='masking',
+                                                 solvent_exclusion='gaussian',
                                                  absorption_contrast=self.param_pot['absorption_contrast'],
                                                  voltage=self.param_pot['voltage'])
         potential2 = ep.sample_to_box(voxel_size=self.param_pot['voxel_size'],
@@ -138,11 +139,11 @@ class TestElectrostaticPotential(unittest.TestCase):
 
         ccc = mm.support.normalised_cross_correlation(potential1.real, potential2.real)
         print('gpu: ', ccc)
-        self.assertGreater(ccc, 0.99)
+        self.assertGreater(ccc, 0.999)
 
         ccc = mm.support.normalised_cross_correlation(potential1.imag, potential2.imag)
         print('gpu (imag): ', ccc)
-        self.assertGreater(ccc, 0.99)
+        self.assertGreater(ccc, 0.999)
 
 
 if __name__ == '__main__':

@@ -72,58 +72,64 @@ extern "C" __global__ void iasa_integrate(
         ind_min.x = max(ind_min.x, 0);
         ind_min.y = max(ind_min.y, 0);
         ind_min.z = max(ind_min.z, 0);
-        ind_max.x = min(ind_max.x, potential_dims[0]);
-        ind_max.y = min(ind_max.y, potential_dims[1]);
-        ind_max.z = min(ind_max.z, potential_dims[2]);
+        ind_max.x = min(ind_max.x, potential_dims[0] - 1);
+        ind_max.y = min(ind_max.y, potential_dims[1] - 1);
+        ind_max.z = min(ind_max.z, potential_dims[2] - 1);
         
-        // precalc sqrt of pi
-        sqrt_pi = sqrt(M_PI);
-        // two times pi
-        pi2 = 2 * M_PI;
-        // loop over coordinates where this atom is present
-        for (l = ind_min.x; l < (ind_max.x + 2); l++) {
-        
-            voxel_bound_min.x = l * voxel_size - atoms[i].x;
-            voxel_bound_max.x = (l + 1) * voxel_size - atoms[i].x;
+        // break if ind_min larger than box or ind_max smaller than 0
+        if ((ind_min.x < potential_dims[0] - 1) && (ind_min.y < potential_dims[1] - 1) && 
+            (ind_min.z < potential_dims[2] - 1) && (ind_max.x > 0) && (ind_max.y > 0) && 
+            (ind_max.z > 0)) {        
             
-            for (m = ind_min.y; m < (ind_max.y + 2); m++) {
+            // precalc sqrt of pi
+            sqrt_pi = sqrt(M_PI);
+            // two times pi
+            pi2 = 2 * M_PI;
+            // loop over coordinates where this atom is present
+            for (l = ind_min.x; l < (ind_max.x + 1); l++) {
             
-                voxel_bound_min.y = m * voxel_size - atoms[i].y;
-                voxel_bound_max.y = (m + 1) * voxel_size - atoms[i].y;
+                voxel_bound_min.x = l * voxel_size - atoms[i].x;
+                voxel_bound_max.x = (l + 1) * voxel_size - atoms[i].x;
                 
-                for (n = ind_min.z; n < (ind_max.z + 2); n++) {
+                for (m = ind_min.y; m < (ind_max.y + 1); m++) {
                 
-                    voxel_bound_min.z = n * voxel_size - atoms[i].z;
-                    voxel_bound_max.z = (n + 1) * voxel_size - atoms[i].z;
+                    voxel_bound_min.y = m * voxel_size - atoms[i].y;
+                    voxel_bound_max.y = (m + 1) * voxel_size - atoms[i].y;
                     
-                    // initialize to zero for this voxel
-                    atom_voxel_pot = 0;
+                    for (n = ind_min.z; n < (ind_max.z + 1); n++) {
                     
-                    for (j = 0; j < 5; j++) {
-                        sqrt_b = sqrt(b[j]);
-                        pi2_sqrt_b = pi2 / sqrt_b;
-                        factor3 = powf(sqrt_b / (4 * sqrt_pi), 3);
+                        voxel_bound_min.z = n * voxel_size - atoms[i].z;
+                        voxel_bound_max.z = (n + 1) * voxel_size - atoms[i].z;
                         
-                        integral_x = (erf(voxel_bound_max.x * pi2_sqrt_b) - erf(voxel_bound_min.x * pi2_sqrt_b));
-                        integral_y = (erf(voxel_bound_max.y * pi2_sqrt_b) - erf(voxel_bound_min.y * pi2_sqrt_b));
-                        integral_z = (erf(voxel_bound_max.z * pi2_sqrt_b) - erf(voxel_bound_min.z * pi2_sqrt_b));
-                        integral_voxel = integral_x * integral_y * integral_z * factor3;
+                        // initialize to zero for this voxel
+                        atom_voxel_pot = 0;
                         
-                        atom_voxel_pot += (a[j] / powf(b[j], (float)3 / 2)) * integral_voxel;
-                    };
-                    
-                    potent_idx = l * potential_dims[1] * potential_dims[2] + m * potential_dims[2] + n;
-                    atomicAdd( potential + potent_idx, atom_voxel_pot );
-                    
-                    if (exclude_solvent == 1) {
-                        factor3 = powf(sqrt_pi * r0 / 2, 3);
+                        for (j = 0; j < 5; j++) {
+                            sqrt_b = sqrt(b[j]);
+                            pi2_sqrt_b = pi2 / sqrt_b;
+                            factor3 = powf(sqrt_b / (4 * sqrt_pi), 3);
+                            
+                            integral_x = (erf(voxel_bound_max.x * pi2_sqrt_b) - erf(voxel_bound_min.x * pi2_sqrt_b));
+                            integral_y = (erf(voxel_bound_max.y * pi2_sqrt_b) - erf(voxel_bound_min.y * pi2_sqrt_b));
+                            integral_z = (erf(voxel_bound_max.z * pi2_sqrt_b) - erf(voxel_bound_min.z * pi2_sqrt_b));
+                            integral_voxel = integral_x * integral_y * integral_z * factor3;
+                            
+                            atom_voxel_pot += (a[j] / powf(b[j], (float)3 / 2)) * integral_voxel;
+                        };
                         
-                        integral_x = erf(voxel_bound_max.x / r0) - erf(voxel_bound_min.x / r0);
-                        integral_y = erf(voxel_bound_max.y / r0) - erf(voxel_bound_min.y / r0);
-                        integral_z = erf(voxel_bound_max.z / r0) - erf(voxel_bound_min.z / r0);
+                        potent_idx = l * potential_dims[1] * potential_dims[2] + m * potential_dims[2] + n;
+                        atomicAdd( potential + potent_idx, atom_voxel_pot );
                         
-                        atomicAdd( solvent + potent_idx, factor3 * integral_x * integral_y * integral_z );
-                    
+                        if (exclude_solvent == 1) {
+                            factor3 = powf(sqrt_pi * r0 / 2, 3);
+                            
+                            integral_x = erf(voxel_bound_max.x / r0) - erf(voxel_bound_min.x / r0);
+                            integral_y = erf(voxel_bound_max.y / r0) - erf(voxel_bound_min.y / r0);
+                            integral_z = erf(voxel_bound_max.z / r0) - erf(voxel_bound_min.z / r0);
+                            
+                            atomicAdd( solvent + potent_idx, factor3 * integral_x * integral_y * integral_z );
+                        
+                        };
                     };
                 };
             };
@@ -713,60 +719,64 @@ def parallel_integrate(index, size, solvent_exclusion, voxel_size, dtype):
         # Radius of gaussian sphere
         r = np.sqrt(r2 / 3)
 
-        ind_min = [max(int((c - r) // voxel_size), 0) for c in rc]  # Smallest index to contain relevant potential x,y,z
-        ind_max = [min(int((c + r) // voxel_size), s) for (c, s) in zip(rc, size)]  # Largest index to contain relevant
+        ind_min = [max(int((c - r) / voxel_size), 0) for c in rc]  # Smallest index to contain relevant potential x,y,z
+        ind_max = [min(int((c + r) / voxel_size), s - 1) for (c, s) in zip(rc, size)]  # largest relevant index
 
-        # Explicit real space coordinates for the max and min boundary of each voxel
-        x_min_bound = np.arange(ind_min[0], ind_max[0] + 1, 1) * voxel_size - rc[0]
-        x_max_bound = np.arange(ind_min[0] + 1, ind_max[0] + 2, 1) * voxel_size - rc[0]
-        y_min_bound = np.arange(ind_min[1], ind_max[1] + 1, 1) * voxel_size - rc[1]
-        y_max_bound = np.arange(ind_min[1] + 1, ind_max[1] + 2, 1) * voxel_size - rc[1]
-        z_min_bound = np.arange(ind_min[2], ind_max[2] + 1, 1) * voxel_size - rc[2]
-        z_max_bound = np.arange(ind_min[2] + 1, ind_max[2] + 2, 1) * voxel_size - rc[2]
+        # only add if valid atom box
+        if ((ind_min[0] < size[0] - 1) and (ind_min[1] < size[1] - 1) and (ind_min[2] < size[2] - 1)
+                and (ind_max[0] > 0) and (ind_max[1] > 0) and (ind_max[2] > 0)):
 
-        atom_potential = 0
+            # Explicit real space coordinates for the max and min boundary of each voxel
+            x_min_bound = np.arange(ind_min[0], ind_max[0] + 1, 1) * voxel_size - rc[0]
+            x_max_bound = np.arange(ind_min[0] + 1, ind_max[0] + 2, 1) * voxel_size - rc[0]
+            y_min_bound = np.arange(ind_min[1], ind_max[1] + 1, 1) * voxel_size - rc[1]
+            y_max_bound = np.arange(ind_min[1] + 1, ind_max[1] + 2, 1) * voxel_size - rc[1]
+            z_min_bound = np.arange(ind_min[2], ind_max[2] + 1, 1) * voxel_size - rc[2]
+            z_max_bound = np.arange(ind_min[2] + 1, ind_max[2] + 2, 1) * voxel_size - rc[2]
 
-        for j in range(5):
-            sqrt_b = np.sqrt(b[j])  # calculate only once
-            # Difference of error function == integrate over Gaussian
-            int_x = sqrt_b / (4 * np.sqrt(np.pi)) * (erf(x_max_bound * 2 * np.pi / sqrt_b) -
-                                                     erf(x_min_bound * 2 * np.pi / sqrt_b))
-            x_matrix = np.tile(int_x[:, np.newaxis, np.newaxis], [1,
-                                                                  ind_max[1] - ind_min[1] + 1,
-                                                                  ind_max[2] - ind_min[2] + 1])
-            int_y = sqrt_b / (4 * np.sqrt(np.pi)) * (erf(y_max_bound * 2 * np.pi / sqrt_b) -
-                                                     erf(y_min_bound * 2 * np.pi / sqrt_b))
-            y_matrix = np.tile(int_y[np.newaxis, :, np.newaxis], [ind_max[0] - ind_min[0] + 1,
-                                                                  1,
-                                                                  ind_max[2] - ind_min[2] + 1])
-            int_z = sqrt_b / (4 * np.sqrt(np.pi)) * (erf(z_max_bound * 2 * np.pi / sqrt_b) -
-                                                     erf(z_min_bound * 2 * np.pi / sqrt_b))
-            z_matrix = np.tile(int_z[np.newaxis, np.newaxis, :], [ind_max[0] - ind_min[0] + 1,
-                                                                  ind_max[1] - ind_min[1] + 1,
-                                                                  1])
+            atom_potential = 0
 
-            atom_potential += a[j] / b[j] ** (3 / 2) * x_matrix * y_matrix * z_matrix
+            for j in range(5):
+                sqrt_b = np.sqrt(b[j])  # calculate only once
+                # Difference of error function == integrate over Gaussian
+                int_x = sqrt_b / (4 * np.sqrt(np.pi)) * (erf(x_max_bound * 2 * np.pi / sqrt_b) -
+                                                         erf(x_min_bound * 2 * np.pi / sqrt_b))
+                x_matrix = np.tile(int_x[:, np.newaxis, np.newaxis], [1,
+                                                                      ind_max[1] - ind_min[1] + 1,
+                                                                      ind_max[2] - ind_min[2] + 1])
+                int_y = sqrt_b / (4 * np.sqrt(np.pi)) * (erf(y_max_bound * 2 * np.pi / sqrt_b) -
+                                                         erf(y_min_bound * 2 * np.pi / sqrt_b))
+                y_matrix = np.tile(int_y[np.newaxis, :, np.newaxis], [ind_max[0] - ind_min[0] + 1,
+                                                                      1,
+                                                                      ind_max[2] - ind_min[2] + 1])
+                int_z = sqrt_b / (4 * np.sqrt(np.pi)) * (erf(z_max_bound * 2 * np.pi / sqrt_b) -
+                                                         erf(z_min_bound * 2 * np.pi / sqrt_b))
+                z_matrix = np.tile(int_z[np.newaxis, np.newaxis, :], [ind_max[0] - ind_min[0] + 1,
+                                                                      ind_max[1] - ind_min[1] + 1,
+                                                                      1])
 
-        potential[ind_min[0]:ind_max[0] + 1, ind_min[1]:ind_max[1] + 1, ind_min[2]:ind_max[2] + 1] += \
-            atom_potential
+                atom_potential += a[j] / b[j] ** (3 / 2) * x_matrix * y_matrix * z_matrix
 
-        if solvent_exclusion == 'gaussian':
-            # excluded solvent potential
-            int_x = np.sqrt(np.pi) * r_0 / 2 * (erf(x_max_bound / r_0) - erf(x_min_bound / r_0))
-            x_matrix = np.tile(int_x[:, np.newaxis, np.newaxis], [1,
-                                                                  ind_max[1] - ind_min[1] + 1,
-                                                                  ind_max[2] - ind_min[2] + 1])
-            int_y = np.sqrt(np.pi) * r_0 / 2 * (erf(y_max_bound / r_0) - erf(y_min_bound / r_0))
-            y_matrix = np.tile(int_y[np.newaxis, :, np.newaxis], [ind_max[0] - ind_min[0] + 1,
-                                                                  1,
-                                                                  ind_max[2] - ind_min[2] + 1])
-            int_z = np.sqrt(np.pi) * r_0 / 2 * (erf(z_max_bound / r_0) - erf(z_min_bound / r_0))
-            z_matrix = np.tile(int_z[np.newaxis, np.newaxis, :], [ind_max[0] - ind_min[0] + 1,
-                                                                  ind_max[1] - ind_min[1] + 1,
-                                                                  1])
+            potential[ind_min[0]:ind_max[0] + 1, ind_min[1]:ind_max[1] + 1, ind_min[2]:ind_max[2] + 1] += \
+                atom_potential
 
-            solvent[ind_min[0]:ind_max[0] + 1, ind_min[1]:ind_max[1] + 1, ind_min[2]:ind_max[2] + 1] += (
-                    x_matrix * y_matrix * z_matrix)
+            if solvent_exclusion == 'gaussian':
+                # excluded solvent potential
+                int_x = np.sqrt(np.pi) * r_0 / 2 * (erf(x_max_bound / r_0) - erf(x_min_bound / r_0))
+                x_matrix = np.tile(int_x[:, np.newaxis, np.newaxis], [1,
+                                                                      ind_max[1] - ind_min[1] + 1,
+                                                                      ind_max[2] - ind_min[2] + 1])
+                int_y = np.sqrt(np.pi) * r_0 / 2 * (erf(y_max_bound / r_0) - erf(y_min_bound / r_0))
+                y_matrix = np.tile(int_y[np.newaxis, :, np.newaxis], [ind_max[0] - ind_min[0] + 1,
+                                                                      1,
+                                                                      ind_max[2] - ind_min[2] + 1])
+                int_z = np.sqrt(np.pi) * r_0 / 2 * (erf(z_max_bound / r_0) - erf(z_min_bound / r_0))
+                z_matrix = np.tile(int_z[np.newaxis, np.newaxis, :], [ind_max[0] - ind_min[0] + 1,
+                                                                      ind_max[1] - ind_min[1] + 1,
+                                                                      1])
+
+                solvent[ind_min[0]:ind_max[0] + 1, ind_min[1]:ind_max[1] + 1, ind_min[2]:ind_max[2] + 1] += (
+                        x_matrix * y_matrix * z_matrix)
 
     print(f' --- process {mp.current_process().name} finished')
 
@@ -809,8 +819,12 @@ def sample_iasa_cpu(structure_tuple, box_dimensions, voxel_size, cores, solvent_
                             voxel_size=voxel_size,
                             dtype=dtype), indices)
     p.join()
-
-    return potential, solvent
+    pout, sout = potential.copy(), solvent.copy()
+    # global shared_data, potential_shared, solvent_shared
+    # del shared_data
+    # del potential_shared
+    # del solvent_shared
+    return pout, sout
 
 
 def sample_iasa_gpu(structure_tuple, box_dimensions, voxel_size, gpu_device, solvent_exclusion=None):
@@ -921,11 +935,11 @@ class ElectrostaticPotential:
         self.update_limits()
 
     def select_atoms(self, x_range, y_range, z_range, voxel_size):
-        x_select = np.logical_and((x_range[0] * voxel_size) <= self.x_coordinates,
+        x_select = np.logical_and((x_range[0] * voxel_size) < self.x_coordinates,
                                   self.x_coordinates < (x_range[1] * voxel_size))
-        y_select = np.logical_and((y_range[0] * voxel_size) <= self.y_coordinates,
+        y_select = np.logical_and((y_range[0] * voxel_size) < self.y_coordinates,
                                   self.y_coordinates < (y_range[1] * voxel_size))
-        z_select = np.logical_and((z_range[0] * voxel_size) <= self.z_coordinates,
+        z_select = np.logical_and((z_range[0] * voxel_size) < self.z_coordinates,
                                   self.z_coordinates < (z_range[1] * voxel_size))
         selector = np.logical_and(x_select, np.logical_and(y_select, z_select))
         # subtract start of box from the coordinates so the selection is inside the box
@@ -999,9 +1013,11 @@ class ElectrostaticPotential:
                                                       voxel_size)
 
                         if 'gpu' in device:
-                            potential_sub, solvent_sub = sample_iasa_gpu(atoms_sub, box_sub, voxel_size, device)
+                            potential_sub, solvent_sub = sample_iasa_gpu(atoms_sub, box_sub, voxel_size, device,
+                                                                         self.solvent_exclusion)
                         else:
-                            potential_sub, solvent_sub = sample_iasa_cpu(atoms_sub, box_sub, voxel_size, cores)
+                            potential_sub, solvent_sub = sample_iasa_cpu(atoms_sub, box_sub, voxel_size, cores,
+                                                                         self.solvent_exclusion)
 
                         potential[x_start: x_end, y_start: y_end, z_start: z_end] = potential_sub
                         solvent[x_start: x_end, y_start: y_end, z_start: z_end] = solvent_sub

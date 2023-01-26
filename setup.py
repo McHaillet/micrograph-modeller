@@ -30,7 +30,11 @@ setuptools.setup(
         'voltools>=0.4.6'
     ],
     packages=setuptools.find_packages(),
-    include_package_data=True,
+    package_data={
+        'micrographmodeller.detectors': ['*.csv'],
+        'micrographmodeller.membrane_models': ['*.pdb'],
+    },
+    # include_package_data=True,
     test_suite='tests',
     scripts=[
         'micrographmodeller/bin/micrograph-modeller.py',

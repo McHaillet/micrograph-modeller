@@ -240,7 +240,7 @@ if __name__ == '__main__':
         random.seed(seed)
 
         print('\n- Generating grand model')
-        mm.micrographmodeller.generate_model(particle_folder, save_path, listpdbs, listmembranes,
+        mm.simulator.generate_model(particle_folder, save_path, listpdbs, listmembranes,
                        pixel_size           =pixel_size * 1E10,
                        size                 =size,
                        thickness            =thickness_voxels,
@@ -260,7 +260,7 @@ if __name__ == '__main__':
         # Grab the ice thickness from the initial model in case program is only executed for projections
         print('\n- Generating projections')
         if device == 'CPU':
-            mm.micrographmodeller.generate_tilt_series_cpu(save_path, angles,
+            mm.simulator.generate_tilt_series_cpu(save_path, angles,
                                       nodes                 =nodes,
                                       image_size            =image_size,
                                       rotation_box_height   =None,  # will automatically calculate fitting size if None
@@ -295,7 +295,7 @@ if __name__ == '__main__':
         random.seed(seed)
         print('\n- Generate frame series projections')
         if device == 'CPU':
-            mm.micrographmodeller.generate_frame_series_cpu(save_path,
+            mm.simulator.generate_frame_series_cpu(save_path,
                                       n_frames              =number_of_frames,
                                       nodes                 =nodes,
                                       image_size            =image_size,
@@ -331,12 +331,12 @@ if __name__ == '__main__':
         np.random.seed(seed)
         random.seed(seed)
         print('\n- Scaling projections with experimental data')
-        mm.micrographmodeller.scale_projections(save_path, pixel_size * 1E10, example_folder,
+        mm.simulator.scale_projections(save_path, pixel_size * 1E10, example_folder,
                                             example_pixel_size, oversampling, nodes, make_even_factor)
 
     if 'TomogramReconstruction' in config.sections():
         print('\n- Reconstructing tomogram')
-        mm.micrographmodeller.reconstruct_tomogram(save_path,
+        mm.simulator.reconstruct_tomogram(save_path,
                              binning=reconstruction_bin,
                              use_scaled_projections=use_scaled_projections,
                              align_projections=align)

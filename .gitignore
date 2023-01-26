@@ -5,6 +5,9 @@
 *.egg-info/
 *.egg
 
+# build
+build/
+
 # ignore __pychache__
 .pyc
 micrographmodeller/__pycache__/

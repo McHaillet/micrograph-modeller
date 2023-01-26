@@ -8,13 +8,16 @@ Author: Marten Chaillet
 
 # essential
 import numpy as np
-import pyvista as pv
 import scipy.ndimage as ndimage
 from scipy.spatial import distance
 from numba import jit
 from micrographmodeller.potential import read_structure
 from threadpoolctl import threadpool_info, threadpool_limits
 from voltools.utils import translation_matrix, rotation_matrix
+try:
+    from pyvista import PolyData
+except ImportError:
+    print('Import of pyvista for generating triangulation is not possible without graphical backend')
 
 
 # ========================================== MEMBRANE PDB HELPER =======================================================
@@ -585,7 +588,7 @@ class Vesicle:
         This returns a surface as pyvista.PolyData and delaunay 3d should work directly on this
         """
         # points is a 3D numpy array (n_points, 3) coordinates of a sphere
-        cloud = pv.PolyData(self.point_cloud)  # built-in pyvista plot: cloud.plot()
+        cloud = PolyData(self.point_cloud)  # built-in pyvista plot: cloud.plot()
 
         # reconstructs the surface from a set of points on an assumed solid surface
         # for noise search for "pyvista perlin noise 3d"

@@ -121,7 +121,7 @@ def generate_model(particle_folder, save_path, listpdbs, listmembranes, pixel_si
     @author: Gijs van der Schot, Ilja Gubins, Marten Chaillet
     """
     # IMPORTANT: We assume the particle models are in the desired voxel spacing for the pixel size of the simulation!
-    from potential import create_gold_marker
+    from micrographmodeller.potential import create_gold_marker
 
     # outputs
     X, Y, Z = size, size, thickness

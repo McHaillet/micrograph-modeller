@@ -57,7 +57,7 @@ def savestar(filename, arr, header='', fmt='', comments='#'):
 def read_mrc(filename, return_spacing_per_dim=False):
     # open the file in permissive mode, if there are big errors reading will fail
     with mrcfile.open(filename, permissive=True) as mrc:
-        data = mrc.data.T  # transpose because I use x y z indexing
+        data = mrc.data.transpose().copy()  # copy after transpose to make memory C contiguous again
         vs = mrc.voxel_size
     if not return_spacing_per_dim:
         assert vs['x'] == vs['y'] and vs['x'] == vs['z'], 'spacing not equal in each dimension'
@@ -68,7 +68,7 @@ def read_mrc(filename, return_spacing_per_dim=False):
 def write_mrc(filename, data, voxel_size, overwrite=True):
     assert not np.iscomplexobj(data), "cannot write complex objects to mrc"
     with mrcfile.new(filename, overwrite=overwrite) as mrc:
-        mrc.set_data(data.astype(np.float32).T)  # transpose because I use x y z indexing
+        mrc.set_data(data.astype(np.float32).transpose())  # transpose because I use x y z indexing
         mrc.voxel_size = voxel_size
 
 

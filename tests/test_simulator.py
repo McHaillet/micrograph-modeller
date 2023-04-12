@@ -120,8 +120,8 @@ class TestMicrographModeller(unittest.TestCase):
         spacing = self.param_sim['pixel_size'] * 1e10
         tomo_1 = mm.support.reduce_resolution_fourier(self.simulate_tomogram(), spacing, 2 * spacing * 8)
         tomo_2 = mm.support.reduce_resolution_fourier(self.simulate_tomogram(), spacing, 2 * spacing * 8)
-        # mm.support.write_mrc('./subtomo1.mrc', tomo_1, 1)
-        # mm.support.write_mrc('./subtomo2.mrc', tomo_2, 1)
+        # mm.support.write_mrc('./subtomo1.mrc', tomo_1, 5)
+        # mm.support.write_mrc('./subtomo2.mrc', tomo_2, 5)
 
         # mask for correlation
         r = int(tomo_1.shape[0] / 2 * 0.8)

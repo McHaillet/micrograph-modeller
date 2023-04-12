@@ -975,6 +975,7 @@ class ElectrostaticPotential:
 
         box_size = int(box_size_angstrom // voxel_size)
         box_size_split = int(box_size // split)
+        overhang_voxels = int(overhang // voxel_size)
 
         if split == 1:
             # sample directly
@@ -993,15 +994,18 @@ class ElectrostaticPotential:
             for i in range(split):
                 for j in range(split):
                     for k in range(split):
-                        x_start = box_size_split * i + int(- overhang // voxel_size if i != 0 else 0)
-                        y_start = box_size_split * j + int(- overhang // voxel_size if j != 0 else 0)
-                        z_start = box_size_split * k + int(- overhang // voxel_size if k != 0 else 0)
+                        x_start = box_size_split * i + int(- overhang_voxels if i != 0 else 0)
+                        y_start = box_size_split * j + int(- overhang_voxels if j != 0 else 0)
+                        z_start = box_size_split * k + int(- overhang_voxels if k != 0 else 0)
                         x_end = box_size_split * (i + 1) + int(box_size % split if i == split - 1
-                                                            else overhang // voxel_size)
+                                                            else overhang_voxels)
                         y_end = box_size_split * (j + 1) + int(box_size % split if j == split - 1
-                                                            else overhang // voxel_size)
+                                                            else overhang_voxels)
                         z_end = box_size_split * (k + 1) + int(box_size % split if k == split - 1
-                                                            else overhang // voxel_size)
+                                                            else overhang_voxels)
+                        x_offset = (overhang_voxels if i != 0 else 0, 0 if i == split - 1 else overhang_voxels)
+                        y_offset = (overhang_voxels if j != 0 else 0, 0 if j == split - 1 else overhang_voxels)
+                        z_offset = (overhang_voxels if k != 0 else 0, 0 if k == split - 1 else overhang_voxels)
 
                         box_sub = (x_end - x_start, y_end - y_start, z_end - z_start)
 
@@ -1015,8 +1019,26 @@ class ElectrostaticPotential:
                             potential_sub, solvent_sub = sample_iasa_cpu(atoms_sub, box_sub, voxel_size, cores,
                                                                          self.solvent_exclusion)
 
-                        potential[x_start: x_end, y_start: y_end, z_start: z_end] = potential_sub
-                        solvent[x_start: x_end, y_start: y_end, z_start: z_end] = solvent_sub
+                        # correct for the overhang when placing back
+                        potential[x_start + x_offset[0]: x_end - x_offset[1],
+                                  y_start + y_offset[0]: y_end - y_offset[1],
+                                  z_start + z_offset[0]: z_end - z_offset[1]] = potential_sub[
+                                                                                x_offset[0]: (- x_offset[1] if
+                                                                                              x_offset[1] else None),
+                                                                                y_offset[0]: (- y_offset[1] if
+                                                                                              y_offset[1] else None),
+                                                                                z_offset[0]: (- z_offset[1] if
+                                                                                              z_offset[1] else None)]
+                        if solvent_sub.ndim != 1:
+                            solvent[x_start + x_offset[0]: x_end - x_offset[1],
+                                    y_start + y_offset[0]: y_end - y_offset[1],
+                                    z_start + z_offset[0]: z_end - z_offset[1]] = solvent_sub[
+                                                                                x_offset[0]: (- x_offset[1] if
+                                                                                              x_offset[1] else None),
+                                                                                y_offset[0]: (- y_offset[1] if
+                                                                                              y_offset[1] else None),
+                                                                                z_offset[0]: (- z_offset[1] if
+                                                                                              z_offset[1] else None)]
 
         # convert potential to correct units and correct for solvent exclusion
         if self.solvent_exclusion == 'gaussian':

@@ -1675,8 +1675,9 @@ def weighted_back_projection(projections, alignment, size, position, binning):
         if edge_taper is None:  # create in first loop iter after rescaled shape is known
             edge_taper = support.taper_mask(p.shape, p.shape[0] // 30)
         if weighting is None:
-            weighting = support.ramp_filter(p.shape) * support.create_circle(p.shape, 0.9 * p.shape[0],
-                                                                             sigma=0.015 * p.shape[0])
+            weighting = (support.ramp_filter(p.shape) *
+                         support.create_circle(p.shape, 0.9 * p.shape[0], sigma=0.015 * p.shape[0]) *
+                         support.create_circle(p.shape, p.shape[0] // 2))
 
         # normalize image
         p = (p - p.mean()) / p.mean()

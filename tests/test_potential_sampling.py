@@ -93,6 +93,23 @@ class TestElectrostaticPotential(unittest.TestCase):
         print('splitting (imag): ', ccc)
         self.assertGreater(ccc, 0.999)
 
+        ep = mm.potential.ElectrostaticPotential(self.param_pot['pdb'],
+                                                 solvent_exclusion=self.param_pot['solvent_exclusion'],
+                                                 absorption_contrast=self.param_pot['absorption_contrast'],
+                                                 voltage=self.param_pot['voltage'])
+        potential3 = ep.sample_to_box(voxel_size=self.param_pot['voxel_size'],
+                                      oversampling=self.param_pot['oversampling'],
+                                      center_coordinates_in_box=True, overhang=30, split=3, cores=4)
+        # mm.support.write_mrc('./potential_split_cpu.mrc', potential3.real, 5)
+
+        ccc = mm.support.normalised_cross_correlation(potential1.real, potential3.real)
+        print('splitting: ', ccc)
+        self.assertGreater(ccc, 0.999)
+
+        ccc = mm.support.normalised_cross_correlation(potential1.imag, potential3.imag)
+        print('splitting (imag): ', ccc)
+        self.assertGreater(ccc, 0.999)
+
     def test_solvent(self):
         # test whether splitting gives same results
         ep = mm.potential.ElectrostaticPotential(self.param_pot['pdb'],

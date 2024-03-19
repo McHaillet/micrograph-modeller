@@ -68,3 +68,8 @@ def switch_to_device(device):
     # if id provided
     if device[4:]:
         cp.cuda.Device(int(device[4:])).use()
+
+
+class StructureModificationError(Exception):
+    """Class for excepting pdb modification error."""
+    pass

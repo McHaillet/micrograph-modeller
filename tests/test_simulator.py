@@ -139,14 +139,17 @@ class TestMicrographModeller(unittest.TestCase):
 
         # generate two different realization of tomogram noise
         spacing = self.param_sim["pixel_size"] * 1e10
-        tomo_1 = support.reduce_resolution_fourier(
-            self.simulate_tomogram(), spacing, 2 * spacing * 8
-        )
-        tomo_2 = support.reduce_resolution_fourier(
-            self.simulate_tomogram(), spacing, 2 * spacing * 8
-        )
+        tomo_1 = self.simulate_tomogram()
+        tomo_2 = self.simulate_tomogram()
         # support.write_mrc('./subtomo1.mrc', tomo_1, 5)
         # support.write_mrc('./subtomo2.mrc', tomo_2, 5)
+
+        tomo_1 = support.reduce_resolution_fourier(
+            tomo_1, spacing, 2 * spacing * 8
+        )
+        tomo_2 = support.reduce_resolution_fourier(
+            tomo_2, spacing, 2 * spacing * 8
+        )
 
         # mask for correlation
         r = int(tomo_1.shape[0] / 2 * 0.8)

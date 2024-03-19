@@ -8,9 +8,11 @@ def back_project(volume, projection, recon_position, tilt_angle):
     dims = volume.shape
     dims_proj = projection.shape
 
-    center_recon = ((dims[0] // 2 + 1) - recon_position[0],
-                    (dims[1] // 2 + 1) - recon_position[1],
-                    (dims[2] // 2 + 1) - recon_position[2])
+    center_recon = (
+        (dims[0] // 2 + 1) - recon_position[0],
+        (dims[1] // 2 + 1) - recon_position[1],
+        (dims[2] // 2 + 1) - recon_position[2],
+    )
     center_proj = ((dims_proj[0] // 2 + 1), (dims_proj[1] // 2 + 1))
 
     tilt_angle_radians = np.deg2rad(tilt_angle)
@@ -24,7 +26,11 @@ def back_project(volume, projection, recon_position, tilt_angle):
     for i in prange(dims[0]):  # prange for parallel
         for j in range(dims[1]):
             for k in range(dims[2]):
-                x, y, z = i - center_recon[0] + 1, j - center_recon[1] + 1, k - center_recon[2] + 1
+                x, y, z = (
+                    i - center_recon[0] + 1,
+                    j - center_recon[1] + 1,
+                    k - center_recon[2] + 1,
+                )
 
                 ix = tr11 * x + tr21 * y + tr31 * z + center_proj[0]
                 iy = tr12 * x + tr22 * y + tr32 * z + center_proj[1]
@@ -33,8 +39,14 @@ def back_project(volume, projection, recon_position, tilt_angle):
                 xoff, yoff = ix - px, iy - py
 
                 if 1 <= px < dims_proj[0] and 1 <= py < dims_proj[1]:
-                    v1 = projection[px - 1, py - 1] + (projection[px, py - 1] - projection[px - 1, py - 1]) * xoff
-                    v2 = projection[px - 1, py] + (projection[px, py] - projection[px - 1, py]) * xoff
+                    v1 = (
+                        projection[px - 1, py - 1]
+                        + (projection[px, py - 1] - projection[px - 1, py - 1]) * xoff
+                    )
+                    v2 = (
+                        projection[px - 1, py]
+                        + (projection[px, py] - projection[px - 1, py]) * xoff
+                    )
                     v3 = v1 + (v2 - v1) * yoff
 
                     volume[i, j, k] += v3
@@ -57,7 +69,7 @@ def fill_values_real_spline_parallel(src, dst, mtx):
 
                 sizex, sizey = dims_src[:2]
 
-                is3D = (len(dims_src) == 3 and dims_src[2] > 1)
+                is3D = len(dims_src) == 3 and dims_src[2] > 1
 
                 if is3D:
                     sizez = dims_src[2]
@@ -66,20 +78,37 @@ def fill_values_real_spline_parallel(src, dst, mtx):
                 v = None
 
                 # is the current position in the data or outside. return default value if outside
-                tooClose4Spline3D = (is3D and (x < 2. or y < 2. or z < 2. or x > (sizex - 3.) or y > (sizey - 3.) or
-                                               z > (sizez - 3.)))
-                tooClose4Spline2D = (not is3D and (x < 2. or y < 2. or x > (sizex - 3.) or y > (sizey - 3.)))
+                tooClose4Spline3D = is3D and (
+                    x < 2.0
+                    or y < 2.0
+                    or z < 2.0
+                    or x > (sizex - 3.0)
+                    or y > (sizey - 3.0)
+                    or z > (sizez - 3.0)
+                )
+                tooClose4Spline2D = not is3D and (
+                    x < 2.0 or y < 2.0 or x > (sizex - 3.0) or y > (sizey - 3.0)
+                )
 
                 # If too close to edge, spline will not work, thus resorts to cubic interpolation. If that does not work
                 # 0 is returned.
 
                 if tooClose4Spline2D or tooClose4Spline3D:
                     # is the current position in the data or outside. return default value if outside
-                    a = (is3D and (x < 1. or y < 1. or z < 1. or x > (sizex-2.) or y > (sizey-2.) or z > (sizez-2.)))
-                    b = (not is3D and (x < 1. or y < 1. or x > (sizex-2.) or y > (sizey-2.)))
+                    a = is3D and (
+                        x < 1.0
+                        or y < 1.0
+                        or z < 1.0
+                        or x > (sizex - 2.0)
+                        or y > (sizey - 2.0)
+                        or z > (sizez - 2.0)
+                    )
+                    b = not is3D and (
+                        x < 1.0 or y < 1.0 or x > (sizex - 2.0) or y > (sizey - 2.0)
+                    )
 
                     if a or b:
-                        v = 0.  # set to 0, but could also do: linearInterpolation(src, x, y, z)
+                        v = 0.0  # set to 0, but could also do: linearInterpolation(src, x, y, z)
 
                     # run cubic interpolation
                     if v is None:
@@ -90,21 +119,29 @@ def fill_values_real_spline_parallel(src, dst, mtx):
                         yoffseth = y - float(floory)  # floating point offset along y
                         zoffseth = z - float(floorz)  # floating point offset along z
 
-                        if xoffseth < 0.0000001 and yoffseth < 0.00000001 and zoffseth < 0.0000001:
+                        if (
+                            xoffseth < 0.0000001
+                            and yoffseth < 0.00000001
+                            and zoffseth < 0.0000001
+                        ):
                             v = src[floorx, floory, floorz]
 
                         if v is None:
                             px_pl_1 = floorx + 1  # all voxels plus 1 from x -> p3,p6,p9
-                            px_mi_1 = floorx - 1  # all voxels minus 1 from x -> p1,p4,p7
+                            px_mi_1 = (
+                                floorx - 1
+                            )  # all voxels minus 1 from x -> p1,p4,p7
 
                             py_pl_1 = floory + 1  # all voxels plus 1 from y -> p1,p2,p3
-                            py_mi_1 = floory - 1  # all voxels minus 1 from x -> p7,p8,p9
+                            py_mi_1 = (
+                                floory - 1
+                            )  # all voxels minus 1 from x -> p7,p8,p9
 
                             lowerLayerBound = -1
                             upperLayerBound = 1
                             layerOffset = 1
 
-                            layerValues = [0., 0., 0.]
+                            layerValues = [0.0, 0.0, 0.0]
 
                             if not is3D:
                                 lowerLayerBound = 0
@@ -112,76 +149,122 @@ def fill_values_real_spline_parallel(src, dst, mtx):
                                 layerOffset = 0
 
                             # interpolation values for each layer (z)
-                            for zIteration in range(lowerLayerBound, upperLayerBound +1):
+                            for zIteration in range(
+                                lowerLayerBound, upperLayerBound + 1
+                            ):
                                 # current position in memory plus current z layer offset in voxels (of type T)
                                 # first will be negative (-1), second 0 (same layer), third is 1, next layer
 
                                 # load the pixel values
-                                v1 = src[floorx-1][floory-1][floorz+zIteration] #*(src-1-this->stridey + zIteration*this->stridez); //one line up in y direction, one position back in x
-                                v2 = src[floorx  ][floory-1][floorz+zIteration] #*(src  -this->stridey + zIteration*this->stridez); //one line up in y direction
-                                v3 = src[floorx+1][floory-1][floorz+zIteration] #*(src+1-this->stridey + zIteration*this->stridez); //one line up in y direction, one position forward in x
-                                v4 = src[floorx-1][floory  ][floorz+zIteration] #*(src-1 + zIteration*this->stridez); //same line in y
-                                v5 = src[floorx  ][floory  ][floorz+zIteration] #*(src + zIteration*this->stridez); //...
-                                v6 = src[floorx+1][floory  ][floorz+zIteration] #*(src+1 + zIteration*this->stridez);
-                                v7 = src[floorx-1][floory+1][floorz+zIteration] #*(src-1+this->stridey + zIteration*this->stridez);
-                                v8 = src[floorx  ][floory+1][floorz+zIteration] #*(src  +this->stridey + zIteration*this->stridez);
-                                v9 = src[floorx+1][floory+1][floorz+zIteration] #*(src+1+this->stridey + zIteration*this->stridez);
-                                #print("Value %f %f %f %f %f %f %f %f %f \n".format(v1,v2,v3,v4,v5,v6,v7,v8,v9))
+                                v1 = src[floorx - 1][floory - 1][
+                                    floorz + zIteration
+                                ]  # *(src-1-this->stridey + zIteration*this->stridez); //one line up in y direction, one position back in x
+                                v2 = src[floorx][floory - 1][
+                                    floorz + zIteration
+                                ]  # *(src  -this->stridey + zIteration*this->stridez); //one line up in y direction
+                                v3 = src[floorx + 1][floory - 1][
+                                    floorz + zIteration
+                                ]  # *(src+1-this->stridey + zIteration*this->stridez); //one line up in y direction, one position forward in x
+                                v4 = src[floorx - 1][floory][
+                                    floorz + zIteration
+                                ]  # *(src-1 + zIteration*this->stridez); //same line in y
+                                v5 = src[floorx][floory][
+                                    floorz + zIteration
+                                ]  # *(src + zIteration*this->stridez); //...
+                                v6 = src[floorx + 1][floory][
+                                    floorz + zIteration
+                                ]  # *(src+1 + zIteration*this->stridez);
+                                v7 = src[floorx - 1][floory + 1][
+                                    floorz + zIteration
+                                ]  # *(src-1+this->stridey + zIteration*this->stridez);
+                                v8 = src[floorx][floory + 1][
+                                    floorz + zIteration
+                                ]  # *(src  +this->stridey + zIteration*this->stridez);
+                                v9 = src[floorx + 1][floory + 1][
+                                    floorz + zIteration
+                                ]  # *(src+1+this->stridey + zIteration*this->stridez);
+                                # print("Value %f %f %f %f %f %f %f %f %f \n".format(v1,v2,v3,v4,v5,v6,v7,v8,v9))
 
                                 # interpolate first row 1 2 3
-                                line1 = CUB_INT(x,v1,px_mi_1,floorx,px_pl_1) #; //px1,px2,px3
-                                line2 = CUB_INT(x,v2,floorx,px_pl_1,px_mi_1) #; //px2,px3,px1
-                                line3 = CUB_INT(x,v3,px_pl_1,px_mi_1,floorx) #; //px3,px1,px2
+                                line1 = CUB_INT(
+                                    x, v1, px_mi_1, floorx, px_pl_1
+                                )  # ; //px1,px2,px3
+                                line2 = CUB_INT(
+                                    x, v2, floorx, px_pl_1, px_mi_1
+                                )  # ; //px2,px3,px1
+                                line3 = CUB_INT(
+                                    x, v3, px_pl_1, px_mi_1, floorx
+                                )  # ; //px3,px1,px2
                                 # line1 = v1*(x-floorx)/(px_mi_1-floorx)*(x-px_pl_1)/(px_mi_1-px_pl_1)
                                 # line2 = v2*(x-px_pl_1)/(floorx-px_pl_1)*(x-px_mi_1)/(floorx-px_mi_1)
                                 # line3 = v3*(x-px_mi_1)/(px_pl_1-px_mi_1)*(x-floorx)/(px_pl_1-floorx)
-                                #//store values into v1
-                                #//printf("Line 1 %f %f %f\n",line1,line2,line3);
+                                # //store values into v1
+                                # //printf("Line 1 %f %f %f\n",line1,line2,line3);
                                 v1 = line1 + line2 + line3
 
                                 # same for the next rows
-                                line1 = CUB_INT(x,v4,px_mi_1,floorx,px_pl_1)
-                                line2 = CUB_INT(x,v5,floorx,px_pl_1,px_mi_1)
-                                line3 = CUB_INT(x,v6,px_pl_1,px_mi_1,floorx)
+                                line1 = CUB_INT(x, v4, px_mi_1, floorx, px_pl_1)
+                                line2 = CUB_INT(x, v5, floorx, px_pl_1, px_mi_1)
+                                line3 = CUB_INT(x, v6, px_pl_1, px_mi_1, floorx)
                                 # line1 = v4*(x-floorx)/(px_mi_1-floorx)*(x-px_pl_1)/(px_mi_1-px_pl_1)
                                 # line2 = v5*(x-px_pl_1)/(floorx-px_pl_1)*(x-px_mi_1)/(floorx-px_mi_1)
                                 # line3 = v6*(x-px_mi_1)/(px_pl_1-px_mi_1)*(x-floorx)/(px_pl_1-floorx)
-                                #//printf("Line 2 %f %f %f\n",line1,line2,line3);
+                                # //printf("Line 2 %f %f %f\n",line1,line2,line3);
                                 v2 = line1 + line2 + line3
 
-                                line1 = CUB_INT(x,v7,px_mi_1,floorx,px_pl_1)
-                                line2 = CUB_INT(x,v8,floorx,px_pl_1,px_mi_1)
-                                line3 = CUB_INT(x,v9,px_pl_1,px_mi_1,floorx)
+                                line1 = CUB_INT(x, v7, px_mi_1, floorx, px_pl_1)
+                                line2 = CUB_INT(x, v8, floorx, px_pl_1, px_mi_1)
+                                line3 = CUB_INT(x, v9, px_pl_1, px_mi_1, floorx)
                                 # line1 = v7*(x-floorx)/(px_mi_1-floorx)*(x-px_pl_1)/(px_mi_1-px_pl_1)
                                 # line2 = v8*(x-px_pl_1)/(floorx-px_pl_1)*(x-px_mi_1)/(floorx-px_mi_1)
                                 # line3 = v9*(x-px_mi_1)/(px_pl_1-px_mi_1)*(x-floorx)/(px_pl_1-floorx)
                                 v3 = line1 + line2 + line3
 
                                 # interpolate col 2 5 8 in y direction
-                                line1 = CUB_INT(y,v1,py_mi_1,floory,py_pl_1)
-                                line2 = CUB_INT(y,v2,floory,py_pl_1,py_mi_1)
-                                line3 = CUB_INT(y,v3,py_pl_1,py_mi_1,floory)
+                                line1 = CUB_INT(y, v1, py_mi_1, floory, py_pl_1)
+                                line2 = CUB_INT(y, v2, floory, py_pl_1, py_mi_1)
+                                line3 = CUB_INT(y, v3, py_pl_1, py_mi_1, floory)
                                 # line1 = v1*(y-floory)/(py_mi_1-floory)*(y-py_pl_1)/(py_mi_1-py_pl_1)
                                 # line2 = v2*(y-py_pl_1)/(floory-py_pl_1)*(y-py_mi_1)/(floory-py_mi_1)
                                 # line3 = v3*(y-py_mi_1)/(py_pl_1-py_mi_1)*(y-floory)/(py_pl_1-floory)
-                                #//printf("Row 1%f %f %f\n",line1,line2,line3);
+                                # //printf("Row 1%f %f %f\n",line1,line2,line3);
 
-                                layerValues[zIteration + layerOffset] = line1 + line2 + line3
+                                layerValues[zIteration + layerOffset] = (
+                                    line1 + line2 + line3
+                                )
 
-                            #//printf("Layer Values %f %f %f \n",layerValues[0],layerValues[1],layerValues[2]);
-                            #//printf("FloorZ %d %d %d \n",floorz-1,floorz,floorz +1);
+                            # //printf("Layer Values %f %f %f \n",layerValues[0],layerValues[1],layerValues[2]);
+                            # //printf("FloorZ %d %d %d \n",floorz-1,floorz,floorz +1);
 
-                            if (is3D):
-                                line1 = CUB_INT(z,layerValues[0],(floorz-1),floorz,(floorz+1))
-                                line2 = CUB_INT(z,layerValues[1],floorz,(floorz+1),(floorz-1))
-                                line3 = CUB_INT(z,layerValues[2],(floorz+1),(floorz-1),floorz)
+                            if is3D:
+                                line1 = CUB_INT(
+                                    z,
+                                    layerValues[0],
+                                    (floorz - 1),
+                                    floorz,
+                                    (floorz + 1),
+                                )
+                                line2 = CUB_INT(
+                                    z,
+                                    layerValues[1],
+                                    floorz,
+                                    (floorz + 1),
+                                    (floorz - 1),
+                                )
+                                line3 = CUB_INT(
+                                    z,
+                                    layerValues[2],
+                                    (floorz + 1),
+                                    (floorz - 1),
+                                    floorz,
+                                )
                                 # line1 = layerValues[0]*(z-floorz)/((floorz-1)-floorz)*(z-(floorz+1))/((floorz-1)-(floorz+1))
                                 # line2 = layerValues[1]*(z-(floorz+1))/(floorz-(floorz+1))*(z-(floorz-1))/(floorz-(floorz-1))
                                 # line3 = layerValues[2]*(z-(floorz-1))/((floorz+1)-(floorz-1))*(z-floorz)/((floorz+1)-floorz)
 
-                            #//printf("Layer 1 %f %f %f\n",line1,line2,line3);
+                            # //printf("Layer 1 %f %f %f\n",line1,line2,line3);
 
-                            v = (line1 + line2 + line3)
+                            v = line1 + line2 + line3
 
                 # If v is not set, go for spline interpolation!
                 if v is None:
@@ -193,7 +276,11 @@ def fill_values_real_spline_parallel(src, dst, mtx):
                     zoffseth = z - float(floorz)  # floating point offset along z
 
                     # in case the point is so close, we just copy the value
-                    if xoffseth < 0.0000001 and yoffseth < 0.00000001 and zoffseth < 0.0000001:
+                    if (
+                        xoffseth < 0.0000001
+                        and yoffseth < 0.00000001
+                        and zoffseth < 0.0000001
+                    ):
                         v = src[floorx][floory][floorz]
 
                     if v is None:
@@ -205,9 +292,9 @@ def fill_values_real_spline_parallel(src, dst, mtx):
                         lowerLayerBound = -1
                         upperLayerBound = 2
                         layerOffset = 1
-                        layerValues = [0., 0., 0., 0.]
+                        layerValues = [0.0, 0.0, 0.0, 0.0]
 
-                        if (not is3D):
+                        if not is3D:
                             lowerLayerBound = 0
                             upperLayerBound = 0
                             layerOffset = 0
@@ -216,25 +303,57 @@ def fill_values_real_spline_parallel(src, dst, mtx):
                         for zIteration in range(lowerLayerBound, upperLayerBound + 1):
                             # load the pixel values
                             # comments are from C++ implementation
-                            v1 = src[floorx - 1][floory - 1][floorz + zIteration]  # one line up in y direction, one position back in x
-                            v2 = src[floorx][floory - 1][floorz + zIteration]  # *(src  -this->stridey + zIteration*this->stridez); #one line up in y direction
-                            v3 = src[floorx + 1][floory - 1][floorz + zIteration]  # *(src+1-this->stridey + zIteration*this->stridez); #one line up in y direction, one position forward in x
-                            v4 = src[floorx + 2][floory - 1][floorz + zIteration]  # *(src+2-this->stridey + zIteration*this->stridez);
+                            v1 = src[floorx - 1][floory - 1][
+                                floorz + zIteration
+                            ]  # one line up in y direction, one position back in x
+                            v2 = src[floorx][floory - 1][
+                                floorz + zIteration
+                            ]  # *(src  -this->stridey + zIteration*this->stridez); #one line up in y direction
+                            v3 = src[floorx + 1][floory - 1][
+                                floorz + zIteration
+                            ]  # *(src+1-this->stridey + zIteration*this->stridez); #one line up in y direction, one position forward in x
+                            v4 = src[floorx + 2][floory - 1][
+                                floorz + zIteration
+                            ]  # *(src+2-this->stridey + zIteration*this->stridez);
 
-                            v5 = src[floorx - 1][floory][floorz + zIteration]  # *(src-1 + zIteration*this->stridez); //same line in y
-                            v6 = src[floorx][floory][floorz + zIteration]  # *(src + zIteration*this->stridez); //...
-                            v7 = src[floorx + 1][floory][floorz + zIteration]  # *(src+1 + zIteration*this->stridez);
-                            v8 = src[floorx + 2][floory][floorz + zIteration]  # *(src+2 + zIteration*this->stridez);
+                            v5 = src[floorx - 1][floory][
+                                floorz + zIteration
+                            ]  # *(src-1 + zIteration*this->stridez); //same line in y
+                            v6 = src[floorx][floory][
+                                floorz + zIteration
+                            ]  # *(src + zIteration*this->stridez); //...
+                            v7 = src[floorx + 1][floory][
+                                floorz + zIteration
+                            ]  # *(src+1 + zIteration*this->stridez);
+                            v8 = src[floorx + 2][floory][
+                                floorz + zIteration
+                            ]  # *(src+2 + zIteration*this->stridez);
 
-                            v9 = src[floorx - 1][floory + 1][floorz + zIteration]  # *(src-1+this->stridey + zIteration*this->stridez);
-                            v10 = src[floorx][floory + 1][floorz + zIteration]  # *(src  +this->stridey + zIteration*this->stridez);
-                            v11 = src[floorx + 1][floory + 1][floorz + zIteration]  # *(src+1+this->stridey + zIteration*this->stridez);
-                            v12 = src[floorx + 2][floory + 1][floorz + zIteration]  # *(src+2+this->stridey + zIteration*this->stridez);
+                            v9 = src[floorx - 1][floory + 1][
+                                floorz + zIteration
+                            ]  # *(src-1+this->stridey + zIteration*this->stridez);
+                            v10 = src[floorx][floory + 1][
+                                floorz + zIteration
+                            ]  # *(src  +this->stridey + zIteration*this->stridez);
+                            v11 = src[floorx + 1][floory + 1][
+                                floorz + zIteration
+                            ]  # *(src+1+this->stridey + zIteration*this->stridez);
+                            v12 = src[floorx + 2][floory + 1][
+                                floorz + zIteration
+                            ]  # *(src+2+this->stridey + zIteration*this->stridez);
 
-                            v13 = src[floorx - 1][floory + 2][floorz + zIteration]  # *(src-1+2*this->stridey + zIteration*this->stridez);
-                            v14 = src[floorx][floory + 2][floorz + zIteration]  # *(src  +2*this->stridey + zIteration*this->stridez);
-                            v15 = src[floorx + 1][floory + 2][floorz + zIteration]  # *(src+1+2*this->stridey + zIteration*this->stridez);
-                            v16 = src[floorx + 2][floory + 2][floorz + zIteration]  # *(src+2+2*this->stridey + zIteration*this->stridez);
+                            v13 = src[floorx - 1][floory + 2][
+                                floorz + zIteration
+                            ]  # *(src-1+2*this->stridey + zIteration*this->stridez);
+                            v14 = src[floorx][floory + 2][
+                                floorz + zIteration
+                            ]  # *(src  +2*this->stridey + zIteration*this->stridez);
+                            v15 = src[floorx + 1][floory + 2][
+                                floorz + zIteration
+                            ]  # *(src+1+2*this->stridey + zIteration*this->stridez);
+                            v16 = src[floorx + 2][floory + 2][
+                                floorz + zIteration
+                            ]  # *(src+2+2*this->stridey + zIteration*this->stridez);
 
                             # calculate spline value for line 1 2 3 4 above pixel of interest
                             D1 = CSPL_INT(f1, f2, f3, f4, v1, v2, v3, v4)
@@ -273,7 +392,9 @@ def fill_values_real_spline_parallel(src, dst, mtx):
                             D2 = CSPL_INT(f4, f3, f2, f1, line1, line2, line3, line4)
                             # D1 = 3*(f1*(line2-line1)+f2*(line3-line1)+f3*(line4-line2)+f4*(line4-line3))
                             # D2 = 3*(f4*(line2-line1)+f3*(line3-line1)+f2*(line4-line2)+f1*(line4-line3))
-                            layerValues[zIteration + layerOffset] = CSPL_CALC(line2, line3, D1, D2, yoffseth)
+                            layerValues[zIteration + layerOffset] = CSPL_CALC(
+                                line2, line3, D1, D2, yoffseth
+                            )
                             # layerValues[zIteration + layerOffset] = \
                             #     line2 + D1*yoffseth +(3*(line3-line2)-2*D1-D2)*(yoffseth**2)+(2*(line2-line3)+D1+D2)*(yoffseth**3)
 
@@ -281,18 +402,37 @@ def fill_values_real_spline_parallel(src, dst, mtx):
                             # calculate spline value for z direction
                             # D1 = 3*(f1*(layerValues[1]-layerValues[0])+f2*(layerValues[2]-layerValues[0]) +
                             #         f3*(layerValues[3]-layerValues[1])+f4*(layerValues[3]-layerValues[2]))
-                            D1 = CSPL_INT(f1, f2, f3, f4, layerValues[0], layerValues[1], layerValues[2],
-                                          layerValues[3])
+                            D1 = CSPL_INT(
+                                f1,
+                                f2,
+                                f3,
+                                f4,
+                                layerValues[0],
+                                layerValues[1],
+                                layerValues[2],
+                                layerValues[3],
+                            )
 
                             # D2 = 3*(f4*(layerValues[1]-layerValues[0])+f3*(layerValues[2]-layerValues[0]) +
                             #         f2*(layerValues[3]-layerValues[1])+f1*(layerValues[3]-layerValues[2]))
-                            D2 = CSPL_INT(f4, f3, f2, f1, layerValues[0], layerValues[1], layerValues[2], layerValues[3])
+                            D2 = CSPL_INT(
+                                f4,
+                                f3,
+                                f2,
+                                f1,
+                                layerValues[0],
+                                layerValues[1],
+                                layerValues[2],
+                                layerValues[3],
+                            )
 
                             # D1 = layerValues[1] + \
                             #      D1*zoffseth + \
                             #      (3*(layerValues[2]-layerValues[1])-2*D1-D2)*(zoffseth**2) + \
                             #      (2*(layerValues[1]-layerValues[2])+D1+D2)*(zoffseth**3)
-                            v = CSPL_CALC(layerValues[1], layerValues[2], D1, D2, zoffseth)
+                            v = CSPL_CALC(
+                                layerValues[1], layerValues[2], D1, D2, zoffseth
+                            )
 
                         else:
                             v = layerValues[0]
@@ -301,15 +441,20 @@ def fill_values_real_spline_parallel(src, dst, mtx):
 
 
 @njit
-def CUB_INT(x,y,xj,x2,x3):
-    return y*(x-x2)/(xj-x2)*(x-x3)/(xj-x3)
+def CUB_INT(x, y, xj, x2, x3):
+    return y * (x - x2) / (xj - x2) * (x - x3) / (xj - x3)
 
 
 @njit
-def CSPL_INT(f1,f2,f3,f4,a,b,c,d):
-    return 3*(f1*(b-a)+f2*(c-a)+f3*(d-b)+f4*(d-c))
+def CSPL_INT(f1, f2, f3, f4, a, b, c, d):
+    return 3 * (f1 * (b - a) + f2 * (c - a) + f3 * (d - b) + f4 * (d - c))
 
 
 @njit
-def CSPL_CALC(c2,c3,D1,D2,off):
-    return c2+D1*off+((3)*(c3-c2)-(2)*D1-D2)*off*off+((2)*(c2-c3)+D1+D2)*off*off*off
+def CSPL_CALC(c2, c3, D1, D2, off):
+    return (
+        c2
+        + D1 * off
+        + ((3) * (c3 - c2) - (2) * D1 - D2) * off * off
+        + ((2) * (c2 - c3) + D1 + D2) * off * off * off
+    )

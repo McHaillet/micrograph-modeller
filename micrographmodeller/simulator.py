@@ -51,10 +51,11 @@ def downscale_class_mask(volume, binning):
 
 def motion_blur(model, spacing, sigma):
 
+    q_squared = sum([d ** 2 for d in microscope.fourier_grids(
+        model.shape, 1 / (2 * spacing),  reduced=True
+    )])
     blurring_filter = np.flip(
-        np.fft.ifftshift(np.exp(- 2 * np.pi ** 2 * sigma ** 2 *
-                                microscope.ctf_grids(
-                                    microscope.fourier_grids(model.shape, 1 / (2 * spacing), reduced=True))[1]),
+        np.fft.ifftshift(np.exp(- 2 * np.pi ** 2 * sigma ** 2 * q_squared),
                          axes=(0, 1)), axis=2)
 
     return np.fft.irfftn(np.fft.rfftn(model) * blurring_filter).real

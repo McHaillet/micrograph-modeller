@@ -34,7 +34,7 @@ system. This can be preferred because CUDA toolkit takes up a lot of disk space.
 ```commandline
 conda create --name micrograph_modeller python=3.8
 conda activate micrograph_modeller
-pip install cupy-cuda116=10.6.0
+python -m pip install cupy-cuda116=10.6.0
 ```
 
 If you did not do so already, activate the environment.
@@ -43,10 +43,17 @@ If you did not do so already, activate the environment.
 conda activate micrograph_modeller
 ```
 
+Clone the repository.
+
+```commandline
+git clone https://github.com/McHaillet/micrograph-modeller.git
+```
+
 And then **install micrograph-modeller**.
 
 ```commandline
-pip install micrograph-modeller
+cd micrograph-modeller
+python -m pip install .
 ```
 
 ## Tests

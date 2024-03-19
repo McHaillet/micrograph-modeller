@@ -11,7 +11,7 @@ import numpy as np
 import scipy.ndimage as ndimage
 from scipy.spatial import distance
 from numba import jit
-from micrographmodeller.potential import read_structure
+from micrographmodeller.pdbs import read_structure
 from threadpoolctl import threadpool_info, threadpool_limits
 from voltools.utils import translation_matrix, rotation_matrix
 
@@ -822,7 +822,7 @@ class Vesicle:
             # place_protein()
             self.occupation[triangle] = True
         """
-        pass
+        raise NotImplementedError
 
     def display_point_cloud(self, zlim=None):
         assert (

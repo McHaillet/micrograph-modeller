@@ -17,6 +17,7 @@ setuptools.setup(
     platforms=['any'],
     python_requires='>=3.8',
     install_requires=[
+        'cupy',
         'gputil',
         'joblib>=1.0.1',
         'numpy',

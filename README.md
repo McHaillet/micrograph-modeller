@@ -14,44 +14,19 @@ full functionality you need to have chimerax installed.
 
 I assume you have miniconda3 installed.
 
-First create an environment with cupy in case you want to use the GPU acceleration. Conda will also automatically 
-install a CUDA toolkit version compatible with cupy in this environment. You can specify more recent versions 
-of cupy, but just keep in mind everything has been developed with 10.6.
+Two options to create the conda environment:
 
-```commandline
-conda create --name micrograph_modeller python=3.8 cupy=10.6.0
-```
+- (1) this will later build cupy against local cuda toolkit: `conda create --name 
+  micrograph_modeller python=3`
 
-If you need a specific version of cudatoolkit you can specify it as well.
+- (2) this gets a prebuild cupy and compatible cuda-toolkit: `conda create --name 
+  micrograph_modeller python=3 cupy cuda-version=11.8`
 
-```commandline
-conda create --name micrograph_modeller python=3.8 cupy=10.6.0 cudatoolkit=11.6
-```
-
-You can also install a wheel of cupy via pip that is build against an installed versions of CUDA toolkit on your 
-system. This can be preferred because CUDA toolkit takes up a lot of disk space.
-
-```commandline
-conda create --name micrograph_modeller python=3.8
-conda activate micrograph_modeller
-python -m pip install cupy-cuda116=10.6.0
-```
-
-If you did not do so already, activate the environment.
+Then activate the environment, clone the repository and install:
 
 ```commandline
 conda activate micrograph_modeller
-```
-
-Clone the repository.
-
-```commandline
 git clone https://github.com/McHaillet/micrograph-modeller.git
-```
-
-And then **install micrograph-modeller**.
-
-```commandline
 cd micrograph-modeller
 python -m pip install .
 ```

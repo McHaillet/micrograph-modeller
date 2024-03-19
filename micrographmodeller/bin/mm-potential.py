@@ -3,7 +3,7 @@
 import argparse
 import os
 import sys
-import micrographmodeller as mm
+from micrographmodeller import potential, physics
 
 
 if __name__ == "__main__":
@@ -80,8 +80,8 @@ if __name__ == "__main__":
         "--solvent-potential",
         type=float,
         required=False,
-        default=mm.physics.V_WATER,
-        help=f"Value for the solvent potential. By default amorphous ice, {mm.physics.V_WATER} V.",
+        default=physics.V_WATER,
+        help=f"Value for the solvent potential. By default amorphous ice, {physics.V_WATER} V.",
     )
     parser.add_argument(
         "-a",
@@ -126,7 +126,7 @@ if __name__ == "__main__":
         print("Destination for writing files does not exist, exiting...")
         sys.exit(0)
 
-    mm.potential.wrapper(
+    potential.wrapper(
         args.file,
         args.destination,
         args.spacing,

@@ -3,10 +3,11 @@ import numpy as np
 import os
 import sys
 import scipy.ndimage as ndimage
-import micrographmodeller.physics as physics
-import micrographmodeller.support as support
-import micrographmodeller.utils as utils
-import micrographmodeller.pdbs as pdbs
+
+from micrographmodeller import physics
+from micrographmodeller import support
+from micrographmodeller import utils
+from micrographmodeller import pdbs
 
 
 # // N should be len(atoms) // 3

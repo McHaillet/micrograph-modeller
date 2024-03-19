@@ -1,5 +1,5 @@
 import os
-import micrographmodeller.utils as utils
+from micrographmodeller import utils
 
 
 def call_chimera(filepath, output_folder):

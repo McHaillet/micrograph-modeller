@@ -8,7 +8,7 @@ import logging
 import datetime
 import numpy as np
 import random
-import micrographmodeller as mm
+from micrographmodeller import support, simulator
 from ast import literal_eval
 from importlib import resources as importlib_resources
 
@@ -237,8 +237,8 @@ if __name__ == "__main__":
             if (
                 simulator_mode == "TiltSeries"
             ):  # make increment scheme  ?  but allow for more complex variation?
-                metadata = mm.support.loadstar(
-                    config["TiltSeries"]["MetaFile"], dtype=mm.support.DATATYPE_METAFILE
+                metadata = support.loadstar(
+                    config["TiltSeries"]["MetaFile"], dtype=support.DATATYPE_METAFILE
                 )
                 angles = metadata["TiltAngle"]  # in degrees
             elif simulator_mode == "FrameSeries":
@@ -308,7 +308,7 @@ if __name__ == "__main__":
         random.seed(seed)
 
         print("\n- Generating grand model")
-        mm.simulator.generate_model(
+        simulator.generate_model(
             particle_folder,
             save_path,
             listpdbs,
@@ -333,7 +333,7 @@ if __name__ == "__main__":
         # Grab the ice thickness from the initial model in case program is only executed for projections
         print("\n- Generating projections")
         if device == "CPU":
-            mm.simulator.generate_tilt_series_cpu(
+            simulator.generate_tilt_series_cpu(
                 save_path,
                 angles,
                 nodes=nodes,
@@ -371,7 +371,7 @@ if __name__ == "__main__":
         random.seed(seed)
         print("\n- Generate frame series projections")
         if device == "CPU":
-            mm.simulator.generate_frame_series_cpu(
+            simulator.generate_frame_series_cpu(
                 save_path,
                 n_frames=number_of_frames,
                 nodes=nodes,
@@ -409,7 +409,7 @@ if __name__ == "__main__":
         np.random.seed(seed)
         random.seed(seed)
         print("\n- Scaling projections with experimental data")
-        mm.simulator.scale_projections(
+        simulator.scale_projections(
             save_path,
             pixel_size * 1e10,
             example_folder,
@@ -421,7 +421,7 @@ if __name__ == "__main__":
 
     if "TomogramReconstruction" in config.sections():
         print("\n- Reconstructing tomogram")
-        mm.simulator.reconstruct_tomogram(
+        simulator.reconstruct_tomogram(
             save_path,
             binning=reconstruction_bin,
             use_scaled_projections=use_scaled_projections,

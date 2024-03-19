@@ -1,7 +1,8 @@
 import numpy as np
-import micrographmodeller.microscope as microscope
-import micrographmodeller.utils as utils
 import mrcfile
+
+from micrographmodeller import microscope
+from micrographmodeller import utils
 
 
 DATATYPE_METAFILE = [

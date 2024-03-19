@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 import voltools as vt
-import micrographmodeller as mm
+from micrographmodeller import simulator, support
 
 
 def project(volume, angles, in_plane_rotations, x_shifts, y_shifts):
@@ -43,7 +43,7 @@ class TestReconstruction(unittest.TestCase):
                 self.tilt_angles, self.in_plane_rotations, self.x_shifts, self.y_shifts
             )
         ]
-        reconstruction = mm.simulator.weighted_back_projection(
+        reconstruction = simulator.weighted_back_projection(
             self.projections, alignment, (50, 50, 50), (0, 0, 0), 1
         )
         # mm.support.write_mrc('./projections.mrc', self.projections, 1)
@@ -51,7 +51,7 @@ class TestReconstruction(unittest.TestCase):
         # mm.support.write_mrc('./reconstruction.mrc', reconstruction, 1)
 
         self.assertGreater(
-            mm.support.normalised_cross_correlation(self.object, reconstruction), 0.8
+            support.normalised_cross_correlation(self.object, reconstruction), 0.8
         )
 
 

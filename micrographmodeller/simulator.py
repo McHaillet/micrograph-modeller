@@ -16,10 +16,11 @@ from joblib import Parallel, delayed
 import numpy as np
 import voltools as vt
 import scipy.ndimage as ndimage
-import micrographmodeller.physics as physics
-import micrographmodeller.support as support
-import micrographmodeller.microscope as microscope
-import micrographmodeller.interpolate as interpolate
+
+from micrographmodeller import physics
+from micrographmodeller import support
+from micrographmodeller import microscope
+from micrographmodeller import interpolate
 
 
 def downscale_class_mask(volume, binning):

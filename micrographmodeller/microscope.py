@@ -1,8 +1,9 @@
 import os
-import micrographmodeller.physics as physics
-import micrographmodeller.utils as utils
 import numpy as np
 from scipy.optimize import curve_fit
+
+from micrographmodeller import physics
+from micrographmodeller import utils
 
 
 def convert_defocusU_defocusV_to_defocus_astigmatism(defocusU, defocusV):

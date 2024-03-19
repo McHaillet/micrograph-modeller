@@ -2,6 +2,7 @@ import unittest
 import numpy as np
 import os
 import micrographmodeller as mm
+from micrographmodeller import potential, simulator, support
 from importlib import resources as importlib_resources
 
 
@@ -18,7 +19,7 @@ class TestMicrographModeller(unittest.TestCase):
             "voltage": 300e3,
         }
 
-        ep = mm.potential.ElectrostaticPotential(
+        ep = potential.ElectrostaticPotential(
             self.param_pot["pdb"],
             solvent_exclusion=self.param_pot["solvent_exclusion"],
             absorption_contrast=self.param_pot["absorption_contrast"],
@@ -95,7 +96,7 @@ class TestMicrographModeller(unittest.TestCase):
         if not os.path.exists(self.param_sim["save_path"] + c):
             os.mkdir(self.param_sim["save_path"] + c)
 
-        mm.simulator.generate_tilt_series_cpu(
+        simulator.generate_tilt_series_cpu(
             self.param_sim["save_path"] + c,
             self.param_sim["angles"],
             nodes=self.param_sim["nodes"],
@@ -111,9 +112,9 @@ class TestMicrographModeller(unittest.TestCase):
         )
 
         # reconstruct the tomogram with alignment
-        metadata = mm.support.loadstar(
+        metadata = support.loadstar(
             os.path.join(self.param_rec["save_path"] + c, "simulation.meta"),
-            dtype=mm.support.DATATYPE_METAFILE,
+            dtype=support.DATATYPE_METAFILE,
         )
         alignment = [
             (
@@ -125,10 +126,10 @@ class TestMicrographModeller(unittest.TestCase):
             )
             for m in metadata
         ]
-        projections, _ = mm.support.read_mrc(
+        projections, _ = support.read_mrc(
             os.path.join(self.param_rec["save_path"] + c, "projections.mrc")
         )
-        return mm.simulator.weighted_back_projection(
+        return simulator.weighted_back_projection(
             projections, alignment, self.potential.shape, (0, 0, 0), 1
         )
 
@@ -138,23 +139,23 @@ class TestMicrographModeller(unittest.TestCase):
 
         # generate two different realization of tomogram noise
         spacing = self.param_sim["pixel_size"] * 1e10
-        tomo_1 = mm.support.reduce_resolution_fourier(
+        tomo_1 = support.reduce_resolution_fourier(
             self.simulate_tomogram(), spacing, 2 * spacing * 8
         )
-        tomo_2 = mm.support.reduce_resolution_fourier(
+        tomo_2 = support.reduce_resolution_fourier(
             self.simulate_tomogram(), spacing, 2 * spacing * 8
         )
-        # mm.support.write_mrc('./subtomo1.mrc', tomo_1, 5)
-        # mm.support.write_mrc('./subtomo2.mrc', tomo_2, 5)
+        # support.write_mrc('./subtomo1.mrc', tomo_1, 5)
+        # support.write_mrc('./subtomo2.mrc', tomo_2, 5)
 
         # mask for correlation
         r = int(tomo_1.shape[0] / 2 * 0.8)
-        mask = mm.support.create_sphere(
+        mask = support.create_sphere(
             tomo_1.shape, radius=r, sigma=r / 20.0, num_sigma=2
         )
 
         # calculate cross-correlation coefficient of the two tomograms
-        ccc = mm.support.normalised_cross_correlation(tomo_1, tomo_2, mask=mask)
+        ccc = support.normalised_cross_correlation(tomo_1, tomo_2, mask=mask)
 
         print(
             "normalized cross correlation of two simulations of identical volume after downsampling both "

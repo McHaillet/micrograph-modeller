@@ -228,43 +228,6 @@ def reduce_resolution_real(data, spacing, resolution):
     )
 
 
-def gradient_image(size, factor, angle=0, center_shift=0, device="cpu"):
-    """
-    Creates an image with a gradient of values rotated along angle. Factor determines the strength of the gradient.
-
-    @param size: size of the image, x and y size are equal
-    @type  size: L{int}
-    @param factor: strength of gradient, value between 0 and 1, where 0 is no gradient and 1 a gradient from 0 to 2
-    @type  factor L{float}
-    @param angle: angle to rotate the gradient by
-    @type  angle: L{float}
-    @param center_shift: whether to shift the gradient from perfect center, if no shift applied center value will
-    always be equal to 1
-    @type  center_shift: L{float}
-
-    @return: image, a 2d array of floats
-    @rtype:  L{np.ndarray}
-
-    @author: Marten Chaillet
-    """
-    xp, ndimage, _ = utils.get_array_module_from_device(device)
-
-    max_rotation_radius = (size / 2) / xp.cos(45 * xp.pi / 180)
-    extension = int(xp.ceil(max_rotation_radius - size / 2))
-    left = 1 - factor
-    right = 1 + factor
-    step = (right - left) / size
-    values = xp.arange(
-        left - extension * step + center_shift * step,
-        right + extension * step + center_shift * step,
-        step,
-    )
-    image = xp.repeat(values[xp.newaxis, :], size + 2 * extension, axis=0)
-    return ndimage.rotate(image, angle, reshape=False)[
-        extension : size + extension, extension : size + extension
-    ]
-
-
 def create_circle(shape, radius=-1, sigma=0, center=None, device="cpu"):
     """
     Create a circle with radius in an image of shape.
@@ -428,60 +391,6 @@ def mean_under_mask(volume, mask):
     return (volume * mask).sum() / mask.sum()
 
 
-def bin_volume(potential, factor):
-    """
-    Bin the data volume (potential) factor times.
-
-    @param potential: data volume, 3d array
-    @type  potential: L{np.ndarray}
-    @param factor: integer multiple of 1, number of times to bin (or downsample)
-    @type  factor: L{int}
-
-    @return: downsampled data, 3d array
-    @rtype:  L{np.ndarray}
-
-    @author: Marten Chaillet
-    """
-    assert type(factor) is int and factor >= 1, print(
-        "non-valid binning factor, should be integer above 1"
-    )
-
-    if factor == 1:
-        return potential
-
-    size = potential.shape
-    s = [(x % factor) // 2 for x in size]
-    d = [(x % factor) % 2 for x in size]
-    # print(size, s, d)
-    # s = (potential.shape[0] % factor) // 2
-    # d = (potential.shape[0] % factor) % 2
-
-    potential = potential[
-        s[0] : size[0] - s[0] - d[0],
-        s[1] : size[1] - s[1] - d[1],
-        s[2] : size[2] - s[2] - d[2],
-    ]
-    # potential = potential[s:potential.shape[0] - s - d, s:potential.shape[0] - s - d, s:potential.shape[0] - s - d]
-
-    size = potential.shape if potential.shape != size else size
-    # ds = int(potential.shape[0]//factor)
-    ds = [int(x // factor) for x in size]
-    # image_size = potential.shape[0]
-
-    # binned = potential.reshape(ds, image_size // ds,
-    #                            ds, image_size // ds, ds, image_size // ds).mean(-1).mean(1).mean(-2)
-    binned = (
-        potential.reshape(
-            ds[0], size[0] // ds[0], ds[1], size[1] // ds[1], ds[2], size[2] // ds[2]
-        )
-        .mean(-1)
-        .mean(1)
-        .mean(-2)
-    )
-
-    return binned
-
-
 def add_correlated_noise(noise_size, dim, device="cpu"):
     """
     Add correlated noise to create density deformations.
@@ -513,39 +422,6 @@ def add_correlated_noise(noise_size, dim, device="cpu"):
     noise = 0.2 * noise_no_norm / abs(noise_no_norm).max()
 
     return 1 + (noise - noise.mean())
-
-
-def paste_in_center(volume, volume2):
-    l, l2 = len(volume.shape), len(volume.shape)
-    assert l == l2, "not same number of dims"
-    for i in range(l):
-        assert volume.shape[i] <= volume2.shape[i]
-
-    if len(volume.shape) == 3:
-        sx, sy, sz = volume.shape
-        SX, SY, SZ = volume2.shape
-        if SX <= sx:
-            volume2[:, :, :] = volume[
-                sx // 2 - SX // 2 : sx // 2 + SX // 2 + SX % 2,
-                sy // 2 - SY // 2 : sy // 2 + SY // 2 + SY % 2,
-                sz // 2 - SZ // 2 : sz // 2 + SZ // 2 + SZ % 2,
-            ]
-        else:
-            volume2[
-                SX // 2 - sx // 2 : SX // 2 + sx // 2 + sx % 2,
-                SY // 2 - sy // 2 : SY // 2 + sy // 2 + sy % 2,
-                SZ // 2 - sz // 2 : SZ // 2 + sz // 2 + sz % 2,
-            ] = volume
-        return volume2
-
-    if len(volume.shape) == 2:
-        sx, sy = volume.shape
-        SX, SY = volume2.shape
-        volume2[
-            SX // 2 - sx // 2 : SX // 2 + sx // 2 + sx % 2,
-            SY // 2 - sy // 2 : SY // 2 + sy // 2 + sy % 2,
-        ] = volume
-        return volume2
 
 
 def ramp_filter(size, device="cpu"):
